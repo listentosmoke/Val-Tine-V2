@@ -97,7 +97,7 @@ This is the brain of your C2. You need to set up the database tables and securit
     *   In your Supabase project dashboard, click **"SQL Editor"** in the left sidebar.
     *   Click **"New query"**.
     *   You will use the migration files located in your local `supabase/migrations/` folder.
-    *   **Option A (Manual)**: Open each `.sql` file in your `supabase/migrations` folder (start with the lowest numbered/earliest timestamp). Copy the content and paste it into the Supabase SQL Editor, then click **Run**.
+    *   **Option A (Manual)**: Open each `.sql` file in your `supabase/migrations` folder (start with the lowest numbered/earliest timestamp (starts with 202601 - 202603)). Copy the content and paste it into the Supabase SQL Editor, then click **Run**.
     *   **Option B (CLI - Advanced)**: If you have the Supabase CLI installed, you can link your project and push migrations:
         ```bash
         supabase link --project-ref <your-project-ref>
