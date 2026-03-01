@@ -76,72 +76,102 @@ A sophisticated, cross-platform remote machine management framework utilizing a 
 1.  **Go (Golang)**: Version 1.21 or higher. [Download Here](https://go.dev/dl/)
 2.  **Node.js & npm**: Version 18 or higher. [Download Here](https://nodejs.org/)
 3.  **Supabase Account**: Free tier works. [Sign Up Here](https://supabase.com/)
-4.  **GitHub Account**: For deployment of the frontend.
+4.  **Supabase CLI**: Required for automated database setup. [Install Guide](https://supabase.com/docs/guides/cli/getting-started)
+    *   **npx (no install needed)** — just prefix commands with `npx`:
+        ```bash
+        npx supabase <command>
+        ```
+    *   **macOS (Homebrew)**:
+        ```bash
+        brew install supabase/tap/supabase
+        ```
+    *   **Windows (Scoop)**:
+        ```bash
+        scoop bucket add supabase https://github.com/supabase/scoop-bucket.git
+        scoop install supabase
+        ```
+5.  **GitHub Account**: For deployment of the frontend.
 
 ---
 
 ## 🚀 Installation & Setup
 
-### 1. Supabase Backend Setup
+### 1. Clone the Repository
 
-This is the brain of your C2. You need to set up the database tables and security policies.
+```bash
+git clone https://github.com/YOUR_USERNAME/Val-Tine-V2.git
+cd Val-Tine-V2
+```
 
-1.  **Create a Project**:
+### 2. Supabase Backend Setup
+
+This is the brain of your C2. The Supabase CLI automates the entire database setup.
+
+1.  **Create a Supabase Project**:
     *   Log in to [Supabase](https://supabase.com/).
     *   Click **"New Project"**.
     *   Name it (e.g., `val-tine-c2`). Set a strong database password.
     *   Select a region close to you.
     *   Wait 1-2 minutes for the project to provision.
 
-2.  **Run Migrations (Setup Schema)**:
-    *   In your Supabase project dashboard, click **"SQL Editor"** in the left sidebar.
-    *   Click **"New query"**.
-    *   You will use the migration files located in your local `supabase/migrations/` folder.
-    *   **Option A (Manual)**: Open each `.sql` file in your `supabase/migrations` folder (start with the lowest numbered/earliest timestamp). Copy the content and paste it into the Supabase SQL Editor, then click **Run**.
-    *   **Option B (CLI - Advanced)**: If you have the Supabase CLI installed, you can link your project and push migrations:
+2.  **Log in to the CLI**:
+    ```bash
+    npx supabase login
+    ```
+    This opens a browser window to authenticate. Paste the token back into the terminal when prompted.
+
+3.  **Link Your Project**:
+    *   Find your **Project Reference ID** in the Supabase dashboard under **Settings > General** (it looks like `abcdefghijklmnop`).
+    *   Link the CLI to your project:
         ```bash
-        supabase link --project-ref <your-project-ref>
-        supabase db push
+        npx supabase link --project-ref <your-project-ref>
         ```
+    *   Enter your database password when prompted.
 
-3.  **Get Credentials**:
-    *   Go to **Settings** (gear icon) > **API**.
-    *   **Project URL**: Copy this. This is your `SUPABASE_URL`.
-    *   **anon public key**: Copy this. This is your `SUPABASE_ANON_KEY`.
+4.  **Push Database Migrations**:
+    This automatically runs all SQL migration files and sets up your tables, indexes, RLS policies, storage buckets, and realtime subscriptions:
+    ```bash
+    npx supabase db push
+    ```
 
-### 2. Frontend Dashboard Setup
+5.  **Deploy the Edge Function**:
+    The file-upload edge function handles screenshot and file uploads from payloads:
+    ```bash
+    npx supabase functions deploy file-upload --no-verify-jwt
+    ```
+    > If you installed the CLI via Homebrew or Scoop, replace `npx supabase` with just `supabase` in all commands above.
+
+6.  **Get Your Credentials**:
+    *   Go to **Settings** (gear icon) > **API** in the Supabase dashboard.
+    *   **Project URL**: Copy this — this is your `VITE_SUPABASE_URL`.
+    *   **anon public key**: Copy this — this is your `VITE_SUPABASE_PUBLISHABLE_KEY`.
+
+### 3. Frontend Dashboard Setup
 
 The dashboard is a static web app that connects to your Supabase backend.
 
-1.  **Clone the Repository**:
-    ```bash
-    git clone https://github.com/YOUR_USERNAME/Val-Tine-V2.git
-    cd Val-Tine-V2
-    ```
-
-2.  **Configure Environment Variables**:
-    *   Rename `.env.example` to `.env` (or create a new `.env` file).
-    *   Add your Supabase credentials:
+1.  **Configure Environment Variables**:
+    *   Edit the `.env` file in the project root with your Supabase credentials:
         ```env
         VITE_SUPABASE_URL=https://your-project-ref.supabase.co
-        VITE_SUPABASE_ANON_KEY=your-anon-key-here
+        VITE_SUPABASE_PUBLISHABLE_KEY=your-anon-key-here
         ```
 
-3.  **Install Dependencies**:
+2.  **Install Dependencies**:
     ```bash
     npm install
     ```
 
-4.  **Run Locally (Development)**:
+3.  **Run Locally (Development)**:
     ```bash
     npm run dev
     ```
     Open `http://localhost:5173` in your browser.
 
-5.  **Deploy (Optional)**:
+4.  **Deploy (Optional)**:
     *   Push your code to GitHub.
     *   Connect the repo to Vercel, Netlify, or Lovable for automatic deployment.
-    *   Ensure you set the `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` environment variables in your hosting provider's dashboard.
+    *   Ensure you set the `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY` environment variables in your hosting provider's dashboard.
 
 ### 3. Payload Compilation
 
