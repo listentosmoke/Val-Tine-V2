@@ -105,7 +105,7 @@ The Supabase CLI handles everything — migrations, storage buckets, RLS policie
     # Authenticate with your Supabase account
     npx supabase login
 
-    # Link this repo to your project (find your ref under Settings > General in the dashboard)
+    # Link this repo to your project (find your ref (project ID) under Settings > General in the dashboard)
     npx supabase link --project-ref <your-project-ref>
 
     # Push all database migrations (tables, indexes, RLS policies, storage buckets, realtime)
