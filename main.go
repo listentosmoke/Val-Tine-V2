@@ -2127,13 +2127,13 @@ func main() {
 		Domains: []C2Domain{
 			{
 				// ===== PASTE YOUR SUPABASE URL AND ANON KEY HERE =====
-				URL:      "https://nsxjbdrloyfrteezdnah.supabase.co",
-				APIKey:   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5zeGpiZHJsb3lmcnRlZXpkbmFoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzIzNDAzMDQsImV4cCI6MjA4NzkxNjMwNH0.0UvkjpIWTLJfn1C58nO2-vUEIOoekuCdhbvrtRpgLpA",
+				URL:      "https://supbaseurl.supabase.co",
+				APIKey:   "dahkeygoesinhere",
 				Priority: 10,
 			},
 		{
-			URL:      "https://nsxjbdrloyfrteezdnah.supabase.co",
-			APIKey:   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5zeGpiZHJsb3lmcnRlZXpkbmFoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzIzNDAzMDQsImV4cCI6MjA4NzkxNjMwNH0.0UvkjpIWTLJfn1C58nO2-vUEIOoekuCdhbvrtRpgLpA",
+			URL:      "https://secondsupabaseurlforredundancy.supabase.co",
+			APIKey:   "daothakeygoeshere",
 			Priority: 5,
 		},
 		},
