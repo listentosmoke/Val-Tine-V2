@@ -237,4 +237,4 @@ The payload accepts the following commands (sent via the "Remote Shell" or Batch
 The use of this software to target systems that you do not own or have explicit permission to test is illegal. The developers and contributors assume no liability and are not responsible for any misuse or damage caused by this program. By using this software, you agree to comply with all applicable local, state, and federal laws.
 
 **Unauthorized access to computer systems is a crime.**
-```
+
