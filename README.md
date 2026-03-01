@@ -114,15 +114,12 @@ This is the brain of your C2. The Supabase CLI automates the entire database set
     *   Select a region close to you.
     *   Wait 1-2 minutes for the project to provision.
 
-2.  **Log in to the CLI**:
-    ```bash
-    npx supabase login
-    ```
-    This opens a browser window to authenticate. Paste the token back into the terminal when prompted.
-
-3.  **Link Your Project**:
-    *   Find your **Project Reference ID** in the Supabase dashboard under **Settings > General** (it looks like `abcdefghijklmnop`).
-    *   Link the CLI to your project:
+2.  **Run Migrations (Setup Schema)**:
+    *   In your Supabase project dashboard, click **"SQL Editor"** in the left sidebar.
+    *   Click **"New query"**.
+    *   You will use the migration files located in your local `supabase/migrations/` folder.
+    *   **Option A (Manual)**: Open each `.sql` file in your `supabase/migrations` folder (start with the lowest numbered/earliest timestamp (starts with 202601 - 202603)). Copy the content and paste it into the Supabase SQL Editor, then click **Run**.
+    *   **Option B (CLI - Advanced)**: If you have the Supabase CLI installed, you can link your project and push migrations:
         ```bash
         npx supabase link --project-ref <your-project-ref>
         ```
