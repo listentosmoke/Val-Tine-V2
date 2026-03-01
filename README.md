@@ -86,7 +86,7 @@ A sophisticated, cross-platform remote machine management framework utilizing a 
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/listentosmoke/Val-Tine-V2.git
+git clone https://github.com/listentosmoke/val-tine-v2.git
 cd Val-Tine-V2
 ```
 
