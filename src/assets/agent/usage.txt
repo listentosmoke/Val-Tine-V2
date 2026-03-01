@@ -1,0 +1,130 @@
+================================================================================
+                        NODEPULSE AGENT BUILDER
+                   Direct Compilation from C Source
+================================================================================
+
+OVERVIEW
+--------
+The NodePulse Agent Builder compiles the C agent from source with your 
+configuration baked in at compile time. Agents auto-register on first run
+with a locally-generated UUID - no pre-configuration needed.
+
+REQUIREMENTS
+------------
+- Python 3.8+
+- GCC or MinGW-w64 (for cross-compilation)
+
+QUICK START
+-----------
+1. Get your organization key from Settings > API in the dashboard
+
+2. Build for your target platform:
+   
+   # Windows 64-bit
+   python builder.py --key YOUR_ORG_KEY --os windows --arch amd64
+   
+   # Linux 64-bit
+   python builder.py --key YOUR_ORG_KEY --os linux --arch amd64
+   
+   # Build all available targets
+   python builder.py --key YOUR_ORG_KEY --all
+
+3. Output goes to ./output/
+
+COMPILER INSTALLATION
+---------------------
+Windows (MinGW-w64):
+  winget install -e --id mingw.mingw-w64-ucrt-x86_64
+
+Linux (cross-compile to Windows):
+  sudo apt install mingw-w64
+
+macOS:
+  xcode-select --install
+  brew install mingw-w64  # for Windows targets
+
+LIST AVAILABLE TARGETS
+----------------------
+python builder.py --list-targets
+
+Shows which targets can be built with your installed compilers.
+
+COMMAND LINE OPTIONS
+--------------------
+Required:
+  --key, -k       Organization communication key
+
+Target Selection:
+  --os, -o        Target OS: windows, linux, darwin
+  --arch, -a      Target arch: amd64, 386, arm64
+  --all           Build all available targets
+
+Configuration:
+  --url, -u       C2 beacon URL (uses default if not specified)
+  --interval, -i  Beacon interval in seconds (default: 60)
+  --jitter, -j    Jitter percentage 0-100 (default: 20)
+  --retries, -r   Max connection retries (default: 3)
+  --modules, -m   Enabled modules (default: terminal,files,systemInfo)
+  --output        Custom output filename
+
+Utilities:
+  --list-targets  Show available build targets
+  --clean         Remove build artifacts
+
+EXAMPLES
+--------
+# Basic Windows build
+python builder.py --key abc123def456 --os windows --arch amd64
+
+# Linux with custom settings
+python builder.py --key abc123def456 --os linux --arch amd64 \
+    --interval 120 --jitter 30 --modules terminal,files,screenshot
+
+# Build everything with custom C2 URL
+python builder.py --key abc123def456 --all \
+    --url https://c2.example.com/functions/v1/agent-beacon
+
+# Clean up
+python builder.py --clean
+
+HOW IT WORKS
+------------
+1. Builder generates config_values.h with your settings
+2. Compiles C source code with config baked in
+3. Outputs optimized, stripped binary (~50-200 KB)
+4. Agent generates UUID on first run, stores locally
+5. Agent beacons with comm_key for org authentication
+6. Backend auto-registers new devices
+
+SUPPORTED TARGETS
+-----------------
+- windows/amd64  (requires MinGW-w64)
+- windows/386    (requires MinGW-w64 i686)
+- linux/amd64    (requires GCC)
+- linux/arm64    (requires aarch64-linux-gnu-gcc)
+- darwin/amd64   (requires Clang, macOS only)
+- darwin/arm64   (requires Clang, macOS only)
+
+OUTPUT STRUCTURE
+----------------
+./output/
+  nodepulse-windows-amd64.exe
+  nodepulse-linux-amd64
+  nodepulse-darwin-arm64
+  ...
+
+TROUBLESHOOTING
+---------------
+"No compiler available":
+  Install the appropriate compiler for your target.
+  Run --list-targets to see what's available.
+
+"Compilation failed":
+  Check the error message. Common issues:
+  - Missing libraries (install dev packages)
+  - Cross-compiler not properly configured
+
+Agent not connecting:
+  - Verify the --key matches your organization key
+  - Check the --url points to your C2 server
+  - Ensure firewall allows outbound HTTPS

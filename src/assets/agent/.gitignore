@@ -1,0 +1,20 @@
+# Configuration (contains secrets)
+config.yaml
+
+# Build outputs
+*.exe
+*.bin
+output/
+stubs/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+*.egg-info/
+
+# Environment
+.env
+.env.local
