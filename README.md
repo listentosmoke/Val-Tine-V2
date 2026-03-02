@@ -132,14 +132,20 @@ The dashboard is a static web app that connects to your Supabase backend.
         VITE_SUPABASE_PUBLISHABLE_KEY=your-anon-key-here
         ```
 
-2.  **Install & Run**:
+2.  **Create a Dashboard User**:
+    *   In the Supabase dashboard, go to **Authentication > Users**.
+    *   Click **"Add User"** and select **"Create New User"**.
+    *   Enter an email and password — these will be your login credentials for the dashboard.
+    *   You can now use these credentials to log in at the dashboard's auth page.
+
+3.  **Install & Run**:
     ```bash
     npm install
     npm run dev
     ```
     Open `http://localhost:5173` in your browser.
 
-3.  **Deploy (Optional)**:
+4.  **Deploy (Optional)**:
     *   Push your code to GitHub.
     *   Connect the repo to Vercel, Netlify, or Lovable for automatic deployment.
     *   Set `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY` in your hosting provider's environment variables.
