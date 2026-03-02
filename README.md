@@ -171,7 +171,7 @@ The payload is the executable you deploy to target machines. It connects to your
 4.  **Input Supabase Credentials**:
     *   Open `main.go` with a text editor.
     *   Scroll to the `main()` function at the bottom.
-    *   Find the `config := &Config{...}` block.
+    *   Find the `config := &Config{...}` block or string search `Build config`.
     *   Replace the placeholder values with your Supabase URL and Anon Key:
         ```go
         Domains: []C2Domain{
