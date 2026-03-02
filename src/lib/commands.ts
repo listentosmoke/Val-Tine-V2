@@ -29,7 +29,7 @@ export async function dispatchCommand(
 const TERMINAL = new Set(["complete", "error", "failed"]);
 
 /**
- * Wait for a command result using polling (no realtime to minimize cloud costs).
+ * Wait for a command result using polling.
  */
 export function waitForResult(
   commandId: string,

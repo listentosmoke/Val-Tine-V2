@@ -166,7 +166,7 @@ const RemoteShellTab = ({
     const cmdId = await dispatchCommand(machineId, "kill", { pid });
     if (cmdId) {
       toast.success(`Kill signal sent for PID ${pid}`);
-      setTimeout(fetchProcesses, 2000);
+      setTimeout(fetchProcesses, 1000);
     }
   };
 

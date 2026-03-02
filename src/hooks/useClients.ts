@@ -26,7 +26,7 @@ export function useClients() {
       if (error) throw error;
       return data as Client[];
     },
-    refetchInterval: 5000,
+    refetchInterval: 2000,
   });
 }
 
@@ -43,7 +43,7 @@ export function useClient(machineId: string) {
       return data as Client;
     },
     enabled: !!machineId,
-    refetchInterval: 5000,
+    refetchInterval: 2000,
   });
 }
 

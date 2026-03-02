@@ -79,7 +79,7 @@ const ExfilTab = ({ machineId }: { machineId: string }) => {
       toast.success(`Download requested: ${requestPath}`);
       setRequestPath("");
       // Poll for new file entry after a delay
-      setTimeout(fetchFiles, 5000);
+      setTimeout(fetchFiles, 2000);
     } else {
       toast.error("Failed to send command");
     }
@@ -91,7 +91,7 @@ const ExfilTab = ({ machineId }: { machineId: string }) => {
     const id = await dispatchCommand(machineId, "browserdb");
     if (id) {
       toast.success("Browser DB exfiltration requested");
-      setTimeout(fetchFiles, 10000);
+      setTimeout(fetchFiles, 3000);
     } else {
       toast.error("Failed to send command");
     }
@@ -105,7 +105,7 @@ const ExfilTab = ({ machineId }: { machineId: string }) => {
     if (id) {
       toast.success(`Exfiltration requested: ${requestPath}`);
       setRequestPath("");
-      setTimeout(fetchFiles, 10000);
+      setTimeout(fetchFiles, 3000);
     } else {
       toast.error("Failed to send command");
     }

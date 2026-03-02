@@ -14,7 +14,7 @@ const NotFound = lazy(() => import("./pages/NotFound"));
 
 const queryClient = new QueryClient({
   defaultOptions: {
-    queries: { retry: 1, staleTime: 10_000 },
+    queries: { retry: 1, staleTime: 2_000 },
   },
 });
 
