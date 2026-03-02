@@ -45,7 +45,7 @@ const SystemInfoTab = ({ machineId }: { machineId: string }) => {
     const id = await dispatchCommand(machineId, "sysinfo");
     if (id) {
       toast.success("System info refresh requested");
-      setTimeout(() => refetch(), 5000);
+      setTimeout(() => refetch(), 2000);
     }
   };
 
