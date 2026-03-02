@@ -237,6 +237,12 @@ The payload accepts the following commands (sent via the "Remote Shell" or Batch
 
 ---
 
+## 🙏 Credits
+
+- **[Beigeworm](https://github.com/beigeworm)** — Original PowerShell payload and C2 framework that inspired this project.
+
+---
+
 ## ⚠️ Disclaimer
 
 **This tool is intended for EDUCATIONAL and RESEARCH purposes only.**
