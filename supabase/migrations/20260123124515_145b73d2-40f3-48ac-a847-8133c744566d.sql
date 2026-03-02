@@ -1,10 +1,13 @@
+-- Enable pgcrypto for gen_random_bytes()
+CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA extensions;
+
 -- Add organization-level communication key for agents
 ALTER TABLE public.organizations 
 ADD COLUMN IF NOT EXISTS communication_key TEXT;
 
 -- Generate a default key for existing organizations
 UPDATE public.organizations
-SET communication_key = encode(gen_random_bytes(32), 'hex')
+SET communication_key = encode(extensions.gen_random_bytes(32), 'hex')
 WHERE communication_key IS NULL;
 
 -- Make it NOT NULL after setting defaults
@@ -25,7 +28,7 @@ AS $$
 DECLARE
   new_key text;
 BEGIN
-  new_key := encode(gen_random_bytes(32), 'hex');
+  new_key := encode(extensions.gen_random_bytes(32), 'hex');
   UPDATE public.organizations SET communication_key = new_key WHERE id = org_id;
   RETURN new_key;
 END;
