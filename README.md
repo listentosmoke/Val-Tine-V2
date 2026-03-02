@@ -117,9 +117,9 @@ The Supabase CLI handles everything — migrations, storage buckets, RLS policie
     That's it — your entire backend is now set up.
 
 3.  **Get Your Credentials**:
-    *   In the Supabase dashboard, go to **Settings > API**.
+    *   In the Supabase dashboard, go to **Project Overview (scroll down) > Project API**.
     *   Copy the **Project URL** — this is your `VITE_SUPABASE_URL`.
-    *   Copy the **anon public key** — this is your `VITE_SUPABASE_PUBLISHABLE_KEY`.
+    *   Copy the **anon public key / Publishable API Key** — this is your `VITE_SUPABASE_PUBLISHABLE_KEY`.
 
 ### 3. Frontend Dashboard Setup
 
