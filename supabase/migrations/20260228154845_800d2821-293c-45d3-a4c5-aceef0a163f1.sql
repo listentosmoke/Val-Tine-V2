@@ -1,1 +1,0 @@
-ALTER TABLE public.screenshots ADD COLUMN storage_path text;
