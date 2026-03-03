@@ -195,6 +195,22 @@ The payload is the executable you deploy to target machines. It connects to your
         *   `-s -w`: Strips debug information (reduces file size).
         *   `-H windowsgui`: Hides the console window on execution.
 
+6.  **Obfuscated Build (Optional)**:
+
+    `obfus.py` is a GUI builder that automates the entire pipeline: compile Go → XOR encrypt → upload to Litterbox → generate PowerShell stager → obfuscate with PyArmor → bundle into a single EXE with PyInstaller.
+
+    *   **Install Python dependencies**:
+        ```bash
+        pip install PyQt5 requests pyarmor pyinstaller
+        ```
+    *   **Run the builder**:
+        ```bash
+        python obfus.py
+        ```
+    *   Click **"Select Go File"** and choose your `main.go` (with credentials already filled in).
+    *   Configure options (XOR encryption, PyArmor obfuscation, hidden window).
+    *   Click **"Build All Stages"** — the final `.exe` will be placed in your current directory.
+
 ---
 
 ## 🎮 Usage Guide

