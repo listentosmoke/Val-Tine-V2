@@ -92,7 +92,7 @@ cd Val-Tine-V2
 
 ### 2. Supabase Backend Setup
 
-The Supabase CLI handles everything — migrations, storage buckets, RLS policies, and edge functions — in a few commands. No need to manually run SQL.
+There are just 2 SQL files to run (schema + storage) and one edge function to deploy. You can use the CLI or paste manually — both work.
 
 1.  **Create a Supabase Project**:
     *   Log in to [Supabase](https://supabase.com/).
@@ -100,7 +100,7 @@ The Supabase CLI handles everything — migrations, storage buckets, RLS policie
     *   Name it (e.g., `val-tine-c2`). Set a strong database password. Remember this password — the CLI will ask for it.
     *   Select a region close to you and wait for it to provision.
 
-2.  **Run the CLI setup** (requires Node.js installed from prerequisites):
+2.  **Option A — CLI setup** (recommended, requires Node.js):
     ```bash
     # Authenticate with your Supabase account
     npx supabase login
@@ -108,13 +108,23 @@ The Supabase CLI handles everything — migrations, storage buckets, RLS policie
     # Link this repo to your project (find your ref (project ID) under Settings > General)
     npx supabase link --project-ref <your-project-ref>
 
-    # Push all database migrations (tables, indexes, RLS policies, storage buckets, realtime)
+    # Push database schema + storage buckets
     npx supabase db push
 
-    # Deploy the file-upload edge function
+    # Deploy the file-upload edge function (REQUIRED for screenshots, recordings, and file uploads)
     npx supabase functions deploy file-upload --no-verify-jwt
     ```
-    That's it — your entire backend is now set up.
+
+    **Option B — Manual paste** (if CLI gives you trouble):
+    *   Go to **SQL Editor** in your Supabase dashboard.
+    *   Paste and run `supabase/migrations/01_schema.sql` — creates all tables, RLS policies, indexes, and realtime subscriptions.
+    *   Paste and run `supabase/migrations/02_storage.sql` — creates storage buckets and their access policies.
+    *   **Deploy the edge function** (still needs CLI — this is what handles screenshots, recordings, and file uploads):
+        ```bash
+        npx supabase functions deploy file-upload --no-verify-jwt
+        ```
+
+    > **Important**: The `file-upload` edge function is required. Without it, screenshots, screen recordings, and file uploads will silently fail. If you can't use the CLI, you can also paste the function code from `supabase/functions/file-upload/index.ts` into **Edge Functions > New Function** in the dashboard.
 
 3.  **Get Your Credentials**:
     *   In the Supabase dashboard, go to **Project Overview (scroll down) > Project API**.
