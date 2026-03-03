@@ -1,4 +1,5 @@
-import { useParams, useNavigate } from "react-router-dom";
+import { useState } from "react";
+import { useParams, useNavigate, useLocation } from "react-router-dom";
 import { useClient } from "@/hooks/useClients";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
@@ -13,6 +14,8 @@ import SurveillanceTab from "@/components/client/SurveillanceTab";
 import ControlTab from "@/components/client/ControlTab";
 import ExfilTab from "@/components/client/ExfilTab";
 import { formatDistanceToNow } from "date-fns";
+
+const VALID_TABS = ["sysinfo", "shell", "surveillance", "files", "exfil", "control"] as const;
 
 function isOnline(lastSeen: string | null) {
   if (!lastSeen) return false;
@@ -29,6 +32,17 @@ const ClientDetail = () => {
   const { machineId } = useParams<{ machineId: string }>();
   const { data: client, isLoading } = useClient(machineId || "");
   const navigate = useNavigate();
+  const location = useLocation();
+
+  // Persist active tab in URL hash so re-renders don't reset to sysinfo
+  const hashTab = location.hash.replace("#", "");
+  const initialTab = VALID_TABS.includes(hashTab as typeof VALID_TABS[number]) ? hashTab : "sysinfo";
+  const [activeTab, setActiveTab] = useState(initialTab);
+
+  const onTabChange = (value: string) => {
+    setActiveTab(value);
+    window.history.replaceState(null, "", `${location.pathname}#${value}`);
+  };
 
   if (isLoading) {
     return (
@@ -118,7 +132,7 @@ const ClientDetail = () => {
         </div>
       </Card>
 
-      <Tabs defaultValue="sysinfo" className="space-y-4">
+      <Tabs value={activeTab} onValueChange={onTabChange} className="space-y-4">
         <TabsList className="bg-muted/30 border border-border/20 p-0.5">
           <TabsTrigger value="sysinfo" className="gap-1.5 text-xs data-[state=active]:bg-card">
             <Cpu className="w-3.5 h-3.5" /> System
