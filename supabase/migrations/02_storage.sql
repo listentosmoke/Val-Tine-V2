@@ -38,6 +38,13 @@ DO $$ BEGIN
 EXCEPTION WHEN duplicate_object THEN NULL;
 END $$;
 
+DO $$ BEGIN
+  CREATE POLICY "anon_delete_file_transfers"
+  ON storage.objects FOR DELETE TO anon
+  USING (bucket_id = 'file-transfers');
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
 -- installers bucket policies
 DO $$ BEGIN
   CREATE POLICY "read_installers"

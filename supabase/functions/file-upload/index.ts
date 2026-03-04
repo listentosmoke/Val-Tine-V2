@@ -75,6 +75,29 @@ Deno.serve(async (req) => {
         );
       }
 
+      // Clean up old screenshots to stay within storage limits (keep latest 20)
+      const { data: oldScreenshots } = await supabase
+        .from("screenshots")
+        .select("id, storage_path")
+        .eq("machine_id", machineId)
+        .order("created_at", { ascending: false })
+        .range(20, 1000);
+
+      if (oldScreenshots && oldScreenshots.length > 0) {
+        const pathsToDelete = oldScreenshots
+          .map((s: any) => s.storage_path)
+          .filter(Boolean);
+        const idsToDelete = oldScreenshots.map((s: any) => s.id);
+
+        if (pathsToDelete.length > 0) {
+          await supabase.storage.from("file-transfers").remove(pathsToDelete);
+        }
+        await supabase
+          .from("screenshots")
+          .delete()
+          .in("id", idsToDelete);
+      }
+
       return new Response(
         JSON.stringify({ id: ssRecord.id, storage_path: storagePath, type: "screenshot" }),
         { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
