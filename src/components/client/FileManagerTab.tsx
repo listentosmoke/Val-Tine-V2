@@ -96,12 +96,12 @@ const FileManagerTab = ({ machineId }: { machineId: string }) => {
   };
 
   const joinWinPath = (dir: string, name: string) => {
-    const cleanDir = dir.replace(/[\\\/]+$/, "");
+    const cleanDir = dir.replace(/[\\/]+$/, "");
     return `${cleanDir}\\${name}`;
   };
 
   const getBaseName = (p: string) => {
-    const trimmed = p.trim().replace(/[\\\/]+$/, "");
+    const trimmed = p.trim().replace(/[\\/]+$/, "");
     const parts = trimmed.split(/\\|\//);
     return parts[parts.length - 1] || "";
   };

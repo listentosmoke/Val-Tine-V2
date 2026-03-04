@@ -218,7 +218,7 @@ const SurveillanceTab = ({ machineId }: { machineId: string }) => {
               </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-                {screenshots.map((ss: any) => {
+                {screenshots.map((ss: { storage_path?: string; screenshot_data?: string; id: string; created_at: string }) => {
                   const imgSrc = ss.storage_path
                     ? undefined
                     : ss.image_data
