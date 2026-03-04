@@ -95,6 +95,23 @@ const FileManagerTab = ({ machineId }: { machineId: string }) => {
     if (cmdId) toast.success(`Download requested: ${fileName}`);
   };
 
+  const joinWinPath = (dir: string, name: string) => {
+    const cleanDir = dir.replace(/[\\\/]+$/, "");
+    return `${cleanDir}\\${name}`;
+  };
+
+  const getBaseName = (p: string) => {
+    const trimmed = p.trim().replace(/[\\\/]+$/, "");
+    const parts = trimmed.split(/\\|\//);
+    return parts[parts.length - 1] || "";
+  };
+
+  const hasFileName = (p: string) => {
+    const base = getBaseName(p);
+    if (!base || base.endsWith(":")) return false;
+    return base.includes(".");
+  };
+
   const handleUpload = async () => {
     if (!uploadFile || !uploadPath) return;
     setUploading(true);
@@ -161,7 +178,7 @@ const FileManagerTab = ({ machineId }: { machineId: string }) => {
               size="sm"
               className="gap-1.5 h-8"
               onClick={() => {
-                setUploadPath(path + "\\uploaded_file");
+                setUploadPath(path);
                 setUploadOpen(true);
               }}
             >
@@ -259,7 +276,16 @@ const FileManagerTab = ({ machineId }: { machineId: string }) => {
             />
             <input
               type="file"
-              onChange={(e) => setUploadFile(e.target.files?.[0] || null)}
+              onChange={(e) => {
+                const f = e.target.files?.[0] || null;
+                setUploadFile(f);
+                if (!f) return;
+                setUploadPath((prev) => {
+                  if (prev && hasFileName(prev)) return prev;
+                  const dir = (prev || path).trim() || path;
+                  return joinWinPath(dir, f.name);
+                });
+              }}
               className="block w-full text-sm text-muted-foreground file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:bg-primary file:text-primary-foreground hover:file:bg-primary/90"
             />
             <Button
