@@ -29,6 +29,7 @@ DROP_SUBDIRS = [
     ("Microsoft", "Windows", "Shell"),
     ("Microsoft", "Network"),
     ("Microsoft", "Crypto"),
+    ("Microsoft", "Windows", "TextInput"),
 ]
 
 # ============================================================

