@@ -1670,7 +1670,13 @@ func elevate() string {
 		0, // SW_HIDE
 	)
 	if ret > 32 {
-		return "UAC elevation successful — new elevated session will connect shortly"
+		// Exit this (non-admin) process so the new elevated instance can
+		// acquire the single-instance mutex and register as admin.
+		go func() {
+			time.Sleep(2 * time.Second)
+			os.Exit(0)
+		}()
+		return "UAC elevation successful — this session will exit, elevated session connecting"
 	}
 	return fmt.Sprintf("UAC elevation failed (code %d, err: %v) — user may have denied the prompt", ret, lastErr)
 }
