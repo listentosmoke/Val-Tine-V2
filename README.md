@@ -15,7 +15,7 @@ Optional:
 
 ```bash
 # 1. Clone
-git clone <repo-url> && cd Val-Tine-V2
+git clone https://github.com/listentosmoke/Val-Tine-V2.git && cd Val-Tine-V2
 
 # 2. Install web dashboard deps
 npm install
