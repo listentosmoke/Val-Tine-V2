@@ -1,4 +1,4 @@
-# Val&Tine V2 - Machine Management System
+# 💘Val&Tine V2 - Machine Management System
 
 A sophisticated, cross-platform remote machine management framework utilizing a custom Supabase backend for command and control (C2). Val&Tine V2 provides a modern web-based dashboard for fleet management, real-time surveillance, and rapid data exfiltration.
 
