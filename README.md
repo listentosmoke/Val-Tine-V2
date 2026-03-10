@@ -4,7 +4,7 @@ A sophisticated, cross-platform remote machine management framework utilizing a 
 
 ![Version](https://img.shields.io/badge/version-2.0.0-red)
 ![Go](https://img.shields.io/badge/Go-1.21+-00ADD8?logo=go)
-![Supabase](https://img.shields.io/badge/Supabase-Backend-3ECF8E?logo=supabase)
+![Supabase](https://img.shields.io/badge/supabase-C2-%233FCF8E?logo=supabase)
 
 ---
 
