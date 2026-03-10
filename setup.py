@@ -105,18 +105,6 @@ def collect_config():
         default=""
     )
 
-    # --- URL shortener Supabase function ---
-    print()
-    log("URL shortener (used by obfus.py build pipeline)")
-    cfg["shortener_supa_url"] = ask(
-        "Shortener Supabase URL (or same as primary)",
-        default=cfg["supa_url"]
-    )
-    cfg["shortener_api_key"] = ask(
-        "Shortener API key",
-        default="listentosmokeforever"
-    )
-
     # --- Supabase CLI login for migrations ---
     print()
     cfg["run_migrations"] = ask_yn("Run SQL migrations via Supabase CLI?", default=True)
@@ -183,16 +171,12 @@ def apply_config(cfg):
         f.write(f'VITE_SUPABASE_PUBLISHABLE_KEY="{cfg["supa_anon_key"]}"\n')
     log(f"Updated {env_file}", "OK")
 
-    # --- obfus.py: URL shortener config ---
-    # Extract project ref from shortener URL for the edge function URL
-    shortener_ref = cfg["shortener_supa_url"].replace("https://", "").replace(".supabase.co", "")
-    shortener_fn_url = f"https://{shortener_ref}.supabase.co/functions/v1/shorten"
+    # --- obfus.py: URL shortener — auto-derive from primary Supabase URL ---
+    supa_ref = cfg["supa_url"].rstrip("/").replace("https://", "").replace(".supabase.co", "")
+    shortener_fn_url = f"https://{supa_ref}.supabase.co/functions/v1/shorten"
     replace_in_file(obfus_file,
         'https://edgqrfijgnyboeymkydu.supabase.co/functions/v1/shorten',
         shortener_fn_url)
-    replace_in_file(obfus_file,
-        '"x-api-key": "listentosmokeforever"',
-        f'"x-api-key": "{cfg["shortener_api_key"]}"')
 
     log("All config files updated", "OK")
 
