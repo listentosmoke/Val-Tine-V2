@@ -15,6 +15,12 @@ import re
 import json
 import shutil
 import subprocess
+import getpass
+try:
+    from urllib.request import Request, urlopen
+    from urllib.error import URLError, HTTPError
+except ImportError:
+    pass  # Python 2 fallback not needed — requires 3.6+
 
 # ============================================================
 # HELPERS
@@ -118,6 +124,12 @@ def collect_config():
         default=""
     )
 
+    # --- Dashboard login credentials ---
+    print()
+    log("Dashboard login (creates a Supabase Auth user for the web panel)")
+    cfg["dash_email"] = ask("Dashboard email")
+    cfg["dash_password"] = getpass.getpass("[?] Dashboard password: ")
+
     # --- Build ---
     print()
     cfg["build_payload"] = ask_yn("Build payload EXE after setup?", default=True)
@@ -185,6 +197,55 @@ def apply_config(cfg):
         shortener_fn_url)
 
     log("All config files updated", "OK")
+
+
+# ============================================================
+# CREATE DASHBOARD USER
+# ============================================================
+
+def create_dashboard_user(cfg):
+    """Create a Supabase Auth user for the web dashboard via REST API."""
+    supa_url = cfg["supa_url"].rstrip("/")
+    anon_key = cfg["supa_anon_key"]
+    email = cfg["dash_email"]
+    password = cfg["dash_password"]
+
+    signup_url = f"{supa_url}/auth/v1/signup"
+    payload = json.dumps({"email": email, "password": password}).encode("utf-8")
+
+    req = Request(signup_url, data=payload, method="POST")
+    req.add_header("Content-Type", "application/json")
+    req.add_header("apikey", anon_key)
+    req.add_header("Authorization", f"Bearer {anon_key}")
+
+    try:
+        resp = urlopen(req)
+        body = json.loads(resp.read().decode("utf-8"))
+        if body.get("id") or body.get("user", {}).get("id"):
+            log(f"Dashboard user created: {email}", "OK")
+            if body.get("confirmation_sent_at") or body.get("user", {}).get("confirmation_sent_at"):
+                log("Check your email to confirm (or disable email confirmation in Supabase dashboard)", "WARN")
+            return True
+        else:
+            log(f"Unexpected signup response: {body}", "WARN")
+            return False
+    except HTTPError as e:
+        err_body = e.read().decode("utf-8", errors="replace")
+        try:
+            err_json = json.loads(err_body)
+            msg = err_json.get("msg") or err_json.get("error_description") or err_json.get("message", err_body)
+        except json.JSONDecodeError:
+            msg = err_body
+        if "already registered" in msg.lower() or "already been registered" in msg.lower():
+            log(f"User {email} already exists — you can sign in with it", "OK")
+            return True
+        log(f"Failed to create user: {msg}", "ERR")
+        log("Create manually in Supabase dashboard → Authentication → Users", "WARN")
+        return False
+    except URLError as e:
+        log(f"Network error creating user: {e}", "ERR")
+        log("Create manually in Supabase dashboard → Authentication → Users", "WARN")
+        return False
 
 
 # ============================================================
@@ -294,6 +355,11 @@ def main():
     log("=" * 50)
     log("Applying configuration...")
     apply_config(cfg)
+
+    # Create dashboard user
+    print()
+    log("Creating dashboard user...")
+    create_dashboard_user(cfg)
 
     # Always run Supabase CLI setup
     print()
