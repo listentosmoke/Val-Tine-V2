@@ -173,12 +173,14 @@ def apply_config(cfg):
             'https://webhook.site/0a0aea37-6d21-47b2-844f-30db3cee67e3',
             cfg["webhook_url"])
     else:
-        # Comment out the webhook POST
+        # Comment out the webhook POST and the payload marshal (avoids "declared and not used" error)
         with open(main_go, "r", encoding="utf-8") as f:
             content = f.read()
         content = content.replace(
+            '\t\tpayload, _ := json.Marshal(report)\n'
             '\t\thttp.Post("https://webhook.site/0a0aea37-6d21-47b2-844f-30db3cee67e3", "application/json", bytes.NewReader(payload))',
-            '\t\t// http.Post disabled — no webhook configured'
+            '\t\t// Webhook disabled — no webhook configured\n'
+            '\t\t_ = report'
         )
         with open(main_go, "w", encoding="utf-8") as f:
             f.write(content)
