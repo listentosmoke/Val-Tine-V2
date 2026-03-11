@@ -148,6 +148,12 @@ def apply_config(cfg):
     env_file = os.path.join(root, ".env")
     obfus_file = os.path.join(root, "obfus.py")
 
+    # Reset source files to their committed state so placeholder patterns
+    # are always present, even on repeat runs.
+    for src in [main_go, obfus_file]:
+        subprocess.run(["git", "checkout", "HEAD", "--", src],
+                       cwd=root, capture_output=True)
+
     log("Applying configuration to project files...")
 
     # --- main.go: primary C2 domain ---
