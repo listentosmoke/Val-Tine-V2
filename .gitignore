@@ -29,3 +29,7 @@ supabase/.temp/
 # Python
 __pycache__/
 *.pyc
+
+# VNC backend — Tor data and auth token
+server/tor_data/
+server/vnc_token.txt
