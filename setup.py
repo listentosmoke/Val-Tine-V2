@@ -42,12 +42,15 @@ def ask_yn(prompt, default=True):
     return val in ("y", "yes")
 
 
+IS_WIN = sys.platform == "win32"
+
+
 def run_cmd(cmd, cwd=None, interactive=False):
-    """Run subprocess. If interactive, streams I/O to terminal."""
+    """Run subprocess. Uses shell=True on Windows for .cmd scripts like npx."""
     if interactive:
-        result = subprocess.run(cmd, cwd=cwd)
+        result = subprocess.run(cmd, cwd=cwd, shell=IS_WIN)
         return result.returncode == 0, "", ""
-    r = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd)
+    r = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd, shell=IS_WIN)
     return r.returncode == 0, r.stdout.strip(), r.stderr.strip()
 
 
