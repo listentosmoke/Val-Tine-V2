@@ -1148,6 +1148,16 @@ func captureScreenJPEG(quality int, scale float64) ([]byte, error) {
 // VNC — AGENT CLIENT LOOP (connects to tunnel URL via direct HTTP)
 // ================================================================
 
+func vncRequest(ctx context.Context, method, url string, body io.Reader, authToken string) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, method, url, body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+authToken)
+	req.Header.Set("Bypass-Tunnel-Reminder", "true")
+	return req, nil
+}
+
 func startVNCClient(ctx context.Context, tunnelURL string, authToken string) {
 	if tunnelURL == "" {
 		return
@@ -1166,8 +1176,7 @@ func startVNCClient(ctx context.Context, tunnelURL string, authToken string) {
 		}
 
 		// Poll for commands
-		req, _ := http.NewRequestWithContext(ctx, "GET", baseURL+"/api/commands", nil)
-		req.Header.Set("Authorization", "Bearer "+authToken)
+		req, _ := vncRequest(ctx, "GET", baseURL+"/api/commands", nil, authToken)
 		resp, err := client.Do(req)
 		if err != nil {
 			time.Sleep(2 * time.Second)
@@ -1222,8 +1231,7 @@ func startVNCClient(ctx context.Context, tunnelURL string, authToken string) {
 		// Capture and send screenshot
 		jpegData, err := captureScreenJPEG(quality, scale)
 		if err == nil && len(jpegData) > 0 {
-			req, _ := http.NewRequestWithContext(ctx, "POST", baseURL+"/api/screenshot", bytes.NewReader(jpegData))
-			req.Header.Set("Authorization", "Bearer "+authToken)
+			req, _ := vncRequest(ctx, "POST", baseURL+"/api/screenshot", bytes.NewReader(jpegData), authToken)
 			req.Header.Set("Content-Type", "image/jpeg")
 			resp, err := client.Do(req)
 			if err == nil {
@@ -1232,8 +1240,7 @@ func startVNCClient(ctx context.Context, tunnelURL string, authToken string) {
 		}
 
 		// Heartbeat
-		req, _ = http.NewRequestWithContext(ctx, "POST", baseURL+"/api/heartbeat", nil)
-		req.Header.Set("Authorization", "Bearer "+authToken)
+		req, _ = vncRequest(ctx, "POST", baseURL+"/api/heartbeat", nil, authToken)
 		resp, err = client.Do(req)
 		if err == nil {
 			resp.Body.Close()

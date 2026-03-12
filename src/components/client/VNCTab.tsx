@@ -14,8 +14,6 @@ interface VNCTabProps {
   machineName: string;
 }
 
-const VNC_BACKEND = `${window.location.protocol}//${window.location.hostname}:3001`;
-
 const VNCTab = ({ machineId, machineName }: VNCTabProps) => {
   const [vncStatus, setVncStatus] = useState<"idle" | "starting" | "connected" | "disconnected">("idle");
   const [agentConnected, setAgentConnected] = useState(false);
@@ -33,7 +31,8 @@ const VNCTab = ({ machineId, machineName }: VNCTabProps) => {
 
   // Connect WebSocket to backend
   const connectWs = useCallback(() => {
-    const ws = new WebSocket(`ws://${window.location.hostname}:3001/ws`);
+    const wsProto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const ws = new WebSocket(`${wsProto}//${window.location.host}/ws`);
 
     ws.onopen = () => {
       console.log("[vnc] WebSocket connected");
@@ -198,7 +197,7 @@ const VNCTab = ({ machineId, machineName }: VNCTabProps) => {
     let backendTunnelUrl: string;
     let backendAuthToken: string;
     try {
-      const statusRes = await fetch(`${VNC_BACKEND}/api/vnc/status`);
+      const statusRes = await fetch(`/api/vnc/status`);
       const statusData = await statusRes.json();
       backendTunnelUrl = statusData.tunnelUrl;
       backendAuthToken = statusData.authToken;
