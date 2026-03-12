@@ -209,9 +209,21 @@ const VNCTab = ({ machineId, machineName }: VNCTabProps) => {
     }
 
     if (!backendTunnelUrl) {
-      setVncStatus("idle");
-      toast.error("No tunnel URL available. Backend may still be starting.");
-      return;
+      toast.error("Tunnel not ready yet — it may be reconnecting. Retrying in 5s...");
+      // Retry once after 5s in case tunnel is reconnecting
+      await new Promise((r) => setTimeout(r, 5000));
+      try {
+        const retry = await fetch(`/api/vnc/status`);
+        const retryData = await retry.json();
+        backendTunnelUrl = retryData.tunnelUrl;
+        backendAuthToken = retryData.authToken;
+        if (backendTunnelUrl) setTunnelUrl(backendTunnelUrl);
+      } catch {}
+      if (!backendTunnelUrl) {
+        setVncStatus("idle");
+        toast.error("Tunnel unavailable. Check server logs for connection errors.");
+        return;
+      }
     }
 
     // Send vnc_start command to agent with the tunnel URL + token
