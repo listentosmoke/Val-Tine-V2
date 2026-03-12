@@ -223,9 +223,13 @@ async function start() {
     console.log(`[vnc] Backend server listening on http://127.0.0.1:${PORT}`);
   });
 
-  // Start localtunnel
+  // Start localtunnel with auto-reconnect
   try {
-    const url = await startTunnel(PORT);
+    const url = await startTunnel(PORT, (newUrl) => {
+      // Tunnel reconnected with a new URL — notify dashboard
+      console.log(`[vnc] Tunnel reconnected: ${newUrl}`);
+      broadcastToDashboard({ type: "status", tunnelUrl: newUrl, agentConnected });
+    });
     console.log(`[vnc] Tunnel URL: ${url}`);
     broadcastToDashboard({ type: "status", tunnelUrl: url, agentConnected });
   } catch (err) {
