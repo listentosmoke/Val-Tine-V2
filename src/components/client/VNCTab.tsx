@@ -14,9 +14,12 @@ interface VNCTabProps {
   machineName: string;
 }
 
+const VNC_BACKEND = `${window.location.protocol}//${window.location.hostname}:3001`;
+
 const VNCTab = ({ machineId, machineName }: VNCTabProps) => {
   const [vncStatus, setVncStatus] = useState<"idle" | "starting" | "connected" | "disconnected">("idle");
   const [agentConnected, setAgentConnected] = useState(false);
+  const [tunnelUrl, setTunnelUrl] = useState<string | null>(null);
   const [interactive, setInteractive] = useState(true);
   const [quality, setQuality] = useState("50");
   const [fps, setFps] = useState("2");
@@ -30,8 +33,7 @@ const VNCTab = ({ machineId, machineName }: VNCTabProps) => {
 
   // Connect WebSocket to backend
   const connectWs = useCallback(() => {
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
+    const ws = new WebSocket(`ws://${window.location.hostname}:3001/ws`);
 
     ws.onopen = () => {
       console.log("[vnc] WebSocket connected");
@@ -69,6 +71,7 @@ const VNCTab = ({ machineId, machineName }: VNCTabProps) => {
           img.src = `data:image/jpeg;base64,${msg.data}`;
         } else if (msg.type === "status") {
           setAgentConnected(msg.agentConnected ?? false);
+          if (msg.tunnelUrl) setTunnelUrl(msg.tunnelUrl);
         }
       } catch {}
     };
@@ -184,22 +187,46 @@ const VNCTab = ({ machineId, machineName }: VNCTabProps) => {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [vncStatus, interactive, sendInput]);
 
-  // Start VNC
+  // Fetch tunnel URL + auth token from backend, then send vnc_start to agent
   const handleStart = async () => {
     setVncStatus("starting");
 
     // Connect WebSocket first
     connectWs();
 
-    // Send vnc_start command to agent via C2
-    const cmdId = await dispatchCommand(machineId, "vnc_start", {});
+    // Get tunnel URL and auth token from the backend
+    let backendTunnelUrl: string;
+    let backendAuthToken: string;
+    try {
+      const statusRes = await fetch(`${VNC_BACKEND}/api/vnc/status`);
+      const statusData = await statusRes.json();
+      backendTunnelUrl = statusData.tunnelUrl;
+      backendAuthToken = statusData.authToken;
+      if (backendTunnelUrl) setTunnelUrl(backendTunnelUrl);
+    } catch (err) {
+      setVncStatus("idle");
+      toast.error("Failed to reach VNC backend on port 3001. Is it running?");
+      return;
+    }
+
+    if (!backendTunnelUrl) {
+      setVncStatus("idle");
+      toast.error("No tunnel URL available. Backend may still be starting.");
+      return;
+    }
+
+    // Send vnc_start command to agent with the tunnel URL + token
+    const cmdId = await dispatchCommand(machineId, "vnc_start", {
+      tunnel_url: backendTunnelUrl,
+      auth_token: backendAuthToken,
+    });
     if (!cmdId) {
       setVncStatus("idle");
       toast.error("Failed to dispatch VNC start command");
       return;
     }
 
-    const result = await waitForResult(cmdId, 120000);
+    const result = await waitForResult(cmdId, 30000);
     if (result?.status === "complete") {
       toast.success("VNC client started on agent");
     } else {
@@ -249,7 +276,7 @@ const VNCTab = ({ machineId, machineName }: VNCTabProps) => {
           <div className="flex items-center justify-between flex-wrap gap-3">
             <div className="flex items-center gap-2">
               <MonitorPlay className="w-4 h-4 text-primary" />
-              <CardTitle className="text-sm">Remote Desktop (VNC over Tor)</CardTitle>
+              <CardTitle className="text-sm">Remote Desktop (VNC via Tunnel)</CardTitle>
               <Badge
                 className={`text-[10px] ${
                   agentConnected
@@ -270,6 +297,9 @@ const VNCTab = ({ machineId, machineName }: VNCTabProps) => {
                 />
                 {agentConnected ? "Agent Connected" : vncStatus === "starting" ? "Starting..." : vncStatus === "connected" ? "Waiting for Agent" : "Offline"}
               </Badge>
+              {tunnelUrl && vncStatus !== "idle" && (
+                <span className="text-[10px] text-muted-foreground font-mono truncate max-w-[200px]">{tunnelUrl}</span>
+              )}
             </div>
 
             <div className="flex items-center gap-2">
@@ -377,11 +407,11 @@ const VNCTab = ({ machineId, machineName }: VNCTabProps) => {
                   <MonitorPlay className="w-12 h-12 mx-auto mb-3 opacity-20" />
                   <p className="text-sm">
                     {vncStatus === "starting"
-                      ? "Starting VNC... The agent is downloading Tor and connecting."
+                      ? "Starting VNC... Connecting agent to tunnel."
                       : "Waiting for agent to connect..."}
                   </p>
                   <p className="text-xs mt-1 text-muted-foreground/60">
-                    This may take up to 2 minutes for Tor to establish a circuit
+                    The agent connects directly via HTTPS tunnel — should be ready in seconds
                   </p>
                 </div>
               )}
@@ -393,15 +423,15 @@ const VNCTab = ({ machineId, machineName }: VNCTabProps) => {
           <CardContent className="py-8">
             <div className="text-center text-muted-foreground">
               <MonitorPlay className="w-12 h-12 mx-auto mb-3 opacity-20" />
-              <h3 className="text-sm font-medium mb-2">Remote Desktop via Tor</h3>
+              <h3 className="text-sm font-medium mb-2">Remote Desktop via Tunnel</h3>
               <p className="text-xs max-w-md mx-auto mb-4">
-                Control {machineName}'s screen remotely over an encrypted Tor connection.
-                Mouse, keyboard, and screen capture are relayed through a .onion hidden service.
+                Control {machineName}'s screen remotely over an encrypted tunnel connection.
+                Mouse, keyboard, and screen capture are relayed through a public HTTPS tunnel.
               </p>
               <div className="text-xs text-left max-w-sm mx-auto space-y-1.5 text-muted-foreground/70">
                 <p>1. Ensure the backend server is running (<code className="bg-muted/50 px-1 rounded">npm run dev</code>)</p>
                 <p>2. Click <strong>Start VNC</strong> above</p>
-                <p>3. The agent will download Tor and connect to the commander's .onion service</p>
+                <p>3. The tunnel URL is sent to the agent which connects directly via HTTPS</p>
                 <p>4. Once connected, the screen will appear and you can interact with it</p>
               </div>
             </div>

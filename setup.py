@@ -124,23 +124,13 @@ def collect_config():
         default=""
     )
 
-    # --- VNC over Tor ---
+    # --- VNC auth token ---
     print()
-    if ask_yn("Enable VNC-over-Tor remote desktop?", default=False):
-        root = os.path.dirname(os.path.abspath(__file__))
-        onion_file = os.path.join(root, "server", "tor_data", "onion_address.txt")
-        if os.path.exists(onion_file):
-            with open(onion_file) as f:
-                cfg["vnc_onion"] = f.read().strip()
-            log(f"Found .onion address: {cfg['vnc_onion']}", "OK")
-        else:
-            cfg["vnc_onion"] = ask(
-                "Commander .onion address (run 'npm run dev' first to generate it)")
+    if ask_yn("Enable VNC remote desktop?", default=False):
         import secrets
         cfg["vnc_token"] = secrets.token_hex(16)
-        log(f"VNC auth token generated", "OK")
+        log("VNC auth token generated (tunnel URL is dynamic — no build-time config needed)", "OK")
     else:
-        cfg["vnc_onion"] = ""
         cfg["vnc_token"] = ""
 
     # --- Dashboard login credentials ---
@@ -223,17 +213,14 @@ def apply_config(cfg):
         'https://edgqrfijgnyboeymkydu.supabase.co/functions/v1/shorten',
         shortener_fn_url)
 
-    # --- main.go: VNC over Tor ---
-    if cfg.get("vnc_onion"):
-        replace_in_file(main_go, 'placeholder.onion', cfg["vnc_onion"])
-        replace_in_file(main_go, 'placeholder_token', cfg["vnc_token"])
-        # Save token for backend to verify
+    # --- VNC auth token ---
+    if cfg.get("vnc_token"):
         token_dir = os.path.join(root, "server")
         os.makedirs(token_dir, exist_ok=True)
         token_file = os.path.join(token_dir, "vnc_token.txt")
         with open(token_file, "w") as f:
             f.write(cfg["vnc_token"])
-        log("VNC .onion address and token configured", "OK")
+        log("VNC auth token saved to server/vnc_token.txt", "OK")
 
     log("All config files updated", "OK")
 
