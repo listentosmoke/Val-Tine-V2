@@ -4,7 +4,7 @@ import { createServer } from "http";
 import { readFileSync, existsSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
-import { startTorHiddenService, stopTor, getOnionAddress } from "./tor.js";
+import { startTunnel, stopTunnel, getTunnelUrl } from "./tunnel.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = 3001;
@@ -48,7 +48,7 @@ function agentAuth(req, res, next) {
   next();
 }
 
-// --- Agent endpoints (exposed via .onion) ---
+// --- Agent endpoints (exposed via tunnel) ---
 
 // Agent polls for pending commands
 app.get("/api/commands", agentAuth, (req, res) => {
@@ -100,11 +100,11 @@ app.post("/api/heartbeat", agentAuth, (req, res) => {
   res.json({ ok: true });
 });
 
-// --- Internal endpoints (for dashboard, not exposed) ---
+// --- Internal endpoints (for dashboard) ---
 
 app.get("/api/vnc/status", (req, res) => {
   res.json({
-    onionAddress: getOnionAddress(),
+    tunnelUrl: getTunnelUrl(),
     agentConnected,
     agentLastSeen,
     queueLength: commandQueue.length,
@@ -139,7 +139,7 @@ wss.on("connection", (ws) => {
   ws.send(JSON.stringify({
     type: "status",
     agentConnected,
-    onionAddress: getOnionAddress(),
+    tunnelUrl: getTunnelUrl(),
   }));
 
   // If we have a recent screenshot, send it
@@ -223,33 +223,27 @@ async function start() {
     console.log(`[vnc] Backend server listening on http://127.0.0.1:${PORT}`);
   });
 
-  // Start Tor hidden service
+  // Start localtunnel
   try {
-    const existingOnion = getOnionAddress();
-    if (existingOnion) {
-      console.log(`[vnc] Existing .onion address: ${existingOnion}`);
-    }
-
-    console.log("[vnc] Starting Tor hidden service...");
-    const onion = await startTorHiddenService(PORT);
-    console.log(`[vnc] .onion address: ${onion}`);
-    broadcastToDashboard({ type: "status", onionAddress: onion, agentConnected });
+    const url = await startTunnel(PORT);
+    console.log(`[vnc] Tunnel URL: ${url}`);
+    broadcastToDashboard({ type: "status", tunnelUrl: url, agentConnected });
   } catch (err) {
-    console.error("[vnc] Failed to start Tor:", err.message);
-    console.log("[vnc] Backend will still work on localhost. Install Tor manually if needed.");
+    console.error("[vnc] Failed to start tunnel:", err.message);
+    console.log("[vnc] Backend will still work on localhost.");
   }
 }
 
 // Graceful shutdown
 process.on("SIGINT", () => {
   console.log("[vnc] Shutting down...");
-  stopTor();
+  stopTunnel();
   server.close();
   process.exit(0);
 });
 
 process.on("SIGTERM", () => {
-  stopTor();
+  stopTunnel();
   server.close();
   process.exit(0);
 });

