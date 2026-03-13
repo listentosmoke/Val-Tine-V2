@@ -1154,6 +1154,7 @@ func vncRequest(ctx context.Context, method, url string, body io.Reader, authTok
 	}
 	req.Header.Set("Authorization", "Bearer "+authToken)
 	req.Header.Set("Bypass-Tunnel-Reminder", "true")
+	req.Header.Set("User-Agent", "ValTine-VNC/1.0")
 	return req, nil
 }
 
@@ -1179,6 +1180,13 @@ func startVNCClient(ctx context.Context, tunnelURL string, authToken string) {
 		resp, err := client.Do(req)
 		if err != nil {
 			time.Sleep(2 * time.Second)
+			continue
+		}
+
+		// Localtunnel reminder page returns 401 — retry after delay
+		if resp.StatusCode == 401 {
+			resp.Body.Close()
+			time.Sleep(3 * time.Second)
 			continue
 		}
 
