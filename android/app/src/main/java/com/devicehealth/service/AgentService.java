@@ -147,17 +147,23 @@ public class AgentService extends Service {
 
     private String getBinaryPath() {
         // The Go binary is packaged as libagent.so in the native lib directory
+        // Android's package manager extracts it to nativeLibraryDir automatically
         String nativeLibDir = getApplicationInfo().nativeLibraryDir;
         File binary = new File(nativeLibDir, "libagent.so");
-        if (binary.exists() && binary.canExecute()) {
-            return binary.getAbsolutePath();
+        if (binary.exists()) {
+            try {
+                binary.setExecutable(true);
+                return binary.getAbsolutePath();
+            } catch (Exception ignored) {}
         }
 
-        // Fallback: check files directory
+        // Fallback: check app files directory
         File fallback = new File(getFilesDir(), "agent");
         if (fallback.exists()) {
-            fallback.setExecutable(true);
-            return fallback.getAbsolutePath();
+            try {
+                fallback.setExecutable(true);
+                return fallback.getAbsolutePath();
+            } catch (Exception ignored) {}
         }
 
         return null;

