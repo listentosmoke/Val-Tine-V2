@@ -355,11 +355,20 @@ def main():
 
     # Check prerequisites
     if not shutil.which("go"):
-        log("Go compiler not found in PATH", "ERR")
+        log("Go compiler not found in PATH. Install from https://go.dev/dl/", "ERR")
         sys.exit(1)
 
     if not os.path.exists(AGENT_SRC):
         log(f"Agent source not found: {AGENT_SRC}", "ERR")
+        sys.exit(1)
+
+    # Check Gradle wrapper or system Gradle
+    gradlew = os.path.join(ANDROID_DIR, "gradlew")
+    if not os.path.exists(gradlew) and not shutil.which("gradle"):
+        log("Neither gradlew nor Gradle found.", "ERR")
+        log("Install Gradle: https://gradle.org/install/", "ERR")
+        log("  Linux (apt): sudo apt install gradle", "ERR")
+        log("  macOS (brew): brew install gradle", "ERR")
         sys.exit(1)
 
     tmpdir = None
