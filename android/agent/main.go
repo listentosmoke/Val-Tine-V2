@@ -67,7 +67,6 @@ type SupabaseC2 struct {
 	apiKey    string
 	machineID string
 	client    *http.Client
-	mu        sync.RWMutex
 }
 
 type Command struct {

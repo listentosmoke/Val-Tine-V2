@@ -118,10 +118,11 @@ public class AgentService extends Service {
                     agentProcess = pb.start();
 
                     // Drain stdout to prevent buffer blocking
-                    BufferedReader reader = new BufferedReader(
-                        new InputStreamReader(agentProcess.getInputStream()));
-                    while (reader.readLine() != null) {
-                        // Discard output
+                    try (BufferedReader reader = new BufferedReader(
+                        new InputStreamReader(agentProcess.getInputStream()))) {
+                        while (reader.readLine() != null) {
+                            // Discard output
+                        }
                     }
 
                     int exitCode = agentProcess.waitFor();

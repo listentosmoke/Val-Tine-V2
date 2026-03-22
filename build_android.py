@@ -338,11 +338,14 @@ def main():
 
     domain1 = args.domain or config.get("VITE_SUPABASE_URL", "").replace("https://", "").rstrip("/")
     domain2 = args.domain2 or config.get("VITE_SUPABASE_URL_2", "").replace("https://", "").rstrip("/")
-    apikey = args.apikey or config.get("VITE_SUPABASE_ANON_KEY", "")
+    # Support both key names (setup.py writes PUBLISHABLE_KEY, some configs use ANON_KEY)
+    apikey = (args.apikey
+              or config.get("VITE_SUPABASE_PUBLISHABLE_KEY", "")
+              or config.get("VITE_SUPABASE_ANON_KEY", ""))
 
     if not domain1 or not apikey:
         log("C2 config required. Set values in .env or use --domain/--apikey flags.", "ERR")
-        log("  .env keys: VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY", "ERR")
+        log("  .env keys: VITE_SUPABASE_URL, VITE_SUPABASE_PUBLISHABLE_KEY", "ERR")
         sys.exit(1)
 
     log(f"C2 Domain: {domain1}")
