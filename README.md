@@ -130,10 +130,13 @@ Set `ANDROID_HOME` environment variable, or the builder will auto-detect from co
 ├── src/                    # Dashboard (React + Vite)
 │   ├── pages/
 │   │   ├── Dashboard.tsx   # Client list & management
-│   │   └── Client.tsx      # Per-client command interface
-│   ├── hooks/              # React hooks (useClients, etc.)
+│   │   ├── ClientDetail.tsx # Per-client command interface
+│   │   ├── Login.tsx       # Auth login page
+│   │   └── NotFound.tsx    # 404 page
+│   ├── hooks/              # React hooks (useClients, useAuth, etc.)
 │   ├── lib/                # Utilities (commands, supabase client)
-│   └── components/         # UI components
+│   ├── integrations/       # Supabase client & types
+│   └── components/         # UI components & client tabs
 ├── android/                # Android APK project
 │   ├── agent/
 │   │   └── main.go         # Android Go agent
@@ -178,7 +181,7 @@ Commands are sent from the dashboard and executed on target devices.
 | `sleep` | Sleep N seconds |
 | `antianalysis` | VM/debugger detection report |
 | `jobs` | List active background jobs |
-| `kill` | Stop a background job |
+| `kill` | Stop a background job (or process on Windows) |
 | `pausejobs` | Stop all jobs |
 | `resumejobs` | Resume default jobs |
 | `options` | Show available commands |
@@ -191,15 +194,21 @@ Commands are sent from the dashboard and executed on target devices.
 | `elevate` | UAC elevation |
 | `excludec` | Add Defender exclusion for C:\\ |
 | `excludeall` | Add Defender exclusions C:-G:\\ |
+| `enableio` | Enable input (keyboard/mouse) |
+| `disableio` | Disable input (keyboard/mouse) |
 | `webcam` | Capture from webcam |
 | `keycapture` | Start keylogger |
+| `keylog_stop` | Stop keylogger |
 | `recordscreen` | Record screen video |
 | `browserdb` | Exfiltrate browser databases |
 | `parsebrowser` | Extract browser URLs/logins |
+| `processes` | List running processes |
+| `list` | List directory contents |
 | `nearbywifi` | Scan nearby WiFi networks |
 | `enumeratelan` | LAN discovery (ping sweep) |
 | `message` | Show message box |
 | `wallpaper` | Change wallpaper |
+| `minimizeall` | Minimize all windows |
 | `vnc_start` | Start remote desktop |
 | `vnc_stop` | Stop remote desktop |
 | `darkmode` | Switch to dark mode |
