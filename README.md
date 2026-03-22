@@ -49,6 +49,7 @@ This interactive wizard will:
 - Update config files (`.env`, `main.go`)
 - Create a dashboard login user
 - Optionally build the Windows payload
+- Optionally build the Android APK
 
 ### 2. Start the Dashboard
 
@@ -209,8 +210,6 @@ Commands are sent from the dashboard and executed on target devices.
 | `message` | Show message box |
 | `wallpaper` | Change wallpaper |
 | `minimizeall` | Minimize all windows |
-| `vnc_start` | Start remote desktop |
-| `vnc_stop` | Stop remote desktop |
 | `darkmode` | Switch to dark mode |
 | `lightmode` | Switch to light mode |
 | `shortcutbomb` | Create desktop shortcuts |
