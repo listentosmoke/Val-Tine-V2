@@ -50,6 +50,8 @@ def ask_yn(prompt, default=True):
 
 
 IS_WIN = sys.platform == "win32"
+IS_MAC = sys.platform == "darwin"
+IS_LINUX = sys.platform.startswith("linux")
 
 
 def run_cmd(cmd, cwd=None, interactive=False):
@@ -64,6 +66,169 @@ def run_cmd(cmd, cwd=None, interactive=False):
 def check_tool(name):
     """Check if a CLI tool is available (cross-platform)."""
     return shutil.which(name) is not None
+
+
+def _detect_pkg_manager():
+    """Detect the system package manager."""
+    if IS_WIN:
+        if shutil.which("winget"):
+            return "winget"
+        if shutil.which("choco"):
+            return "choco"
+        return None
+    if IS_MAC:
+        if shutil.which("brew"):
+            return "brew"
+        return None
+    # Linux
+    for pm in ["apt", "dnf", "yum", "pacman", "zypper"]:
+        if shutil.which(pm):
+            return pm
+    return None
+
+
+def _install_cmd(pkg_manager, package_name):
+    """Return the install command list for a given package manager and package."""
+    cmds = {
+        "apt":    ["sudo", "apt", "install", "-y", package_name],
+        "dnf":    ["sudo", "dnf", "install", "-y", package_name],
+        "yum":    ["sudo", "yum", "install", "-y", package_name],
+        "pacman": ["sudo", "pacman", "-S", "--noconfirm", package_name],
+        "zypper": ["sudo", "zypper", "install", "-y", package_name],
+        "brew":   ["brew", "install", package_name],
+        "winget": ["winget", "install", "--accept-source-agreements", "--accept-package-agreements", package_name],
+        "choco":  ["choco", "install", "-y", package_name],
+    }
+    return cmds.get(pkg_manager)
+
+
+# Maps tool binary name -> package names per package manager
+DEPENDENCY_PACKAGES = {
+    "go": {
+        "apt": "golang", "dnf": "golang", "yum": "golang",
+        "pacman": "go", "zypper": "go",
+        "brew": "go", "winget": "GoLang.Go", "choco": "golang",
+        "url": "https://go.dev/dl/",
+    },
+    "node": {
+        "apt": "nodejs", "dnf": "nodejs", "yum": "nodejs",
+        "pacman": "nodejs", "zypper": "nodejs",
+        "brew": "node", "winget": "OpenJS.NodeJS.LTS", "choco": "nodejs-lts",
+        "url": "https://nodejs.org/",
+    },
+    "java": {
+        "apt": "default-jdk", "dnf": "java-11-openjdk-devel", "yum": "java-11-openjdk-devel",
+        "pacman": "jdk-openjdk", "zypper": "java-11-openjdk-devel",
+        "brew": "openjdk@11", "winget": "EclipseAdoptium.Temurin.11.JDK", "choco": "openjdk11",
+        "url": "https://adoptium.net/",
+    },
+    "gradle": {
+        "apt": "gradle", "dnf": "gradle", "yum": "gradle",
+        "pacman": "gradle", "zypper": "gradle",
+        "brew": "gradle", "winget": "Gradle.Gradle", "choco": "gradle",
+        "url": "https://gradle.org/install/",
+    },
+}
+
+
+def _check_java():
+    """Check if Java JDK is installed (keytool + javac)."""
+    return shutil.which("javac") is not None or shutil.which("keytool") is not None
+
+
+def _check_node():
+    """Check if Node.js is installed (node or npx)."""
+    return shutil.which("node") is not None or shutil.which("npx") is not None
+
+
+def _try_install(tool_name, pkg_manager):
+    """Attempt to install a tool using the detected package manager."""
+    pkg_info = DEPENDENCY_PACKAGES.get(tool_name, {})
+    pkg_name = pkg_info.get(pkg_manager)
+    if not pkg_name:
+        return False
+    cmd = _install_cmd(pkg_manager, pkg_name)
+    if not cmd:
+        return False
+    log(f"Installing {tool_name} via {pkg_manager}...")
+    result = subprocess.run(cmd)
+    return result.returncode == 0
+
+
+def check_dependencies(build_payload=False, build_apk=False):
+    """Check all required dependencies and offer to install missing ones.
+
+    Returns True if all required deps are satisfied, False otherwise.
+    """
+    print()
+    log("Checking dependencies...")
+    print()
+
+    pkg_manager = _detect_pkg_manager()
+
+    # Define deps: (display_name, check_fn, tool_key, required_for)
+    deps = [
+        ("Go 1.21+",    lambda: check_tool("go"),   "go",      "payload builds"),
+        ("Node.js 18+", _check_node,                 "node",    "Supabase CLI & dashboard"),
+    ]
+    if build_apk:
+        deps.append(("Java JDK 11+", _check_java, "java", "Android APK signing"))
+        deps.append(("Gradle",       lambda: check_tool("gradle"), "gradle", "Android APK build"))
+
+    missing = []
+    for display, checker, key, reason in deps:
+        if checker():
+            log(f"{display:<16} found", "OK")
+        else:
+            log(f"{display:<16} NOT FOUND  (needed for {reason})", "ERR")
+            missing.append((display, key, reason))
+
+    if not missing:
+        print()
+        log("All dependencies satisfied!", "OK")
+        return True
+
+    # Offer to install
+    print()
+    log(f"{len(missing)} missing dependency(ies):", "WARN")
+    for display, key, reason in missing:
+        url = DEPENDENCY_PACKAGES.get(key, {}).get("url", "")
+        log(f"  - {display}  ({url})")
+
+    if pkg_manager:
+        print()
+        if ask_yn(f"Attempt to install missing dependencies using '{pkg_manager}'?", default=True):
+            still_missing = []
+            for display, key, reason in missing:
+                if _try_install(key, pkg_manager):
+                    log(f"{display} installed", "OK")
+                else:
+                    log(f"Failed to install {display}", "ERR")
+                    still_missing.append((display, key, reason))
+
+            if not still_missing:
+                log("All dependencies installed!", "OK")
+                return True
+
+            print()
+            log("Some dependencies could not be installed automatically:", "ERR")
+            for display, key, reason in still_missing:
+                url = DEPENDENCY_PACKAGES.get(key, {}).get("url", "")
+                log(f"  - {display}: install manually from {url}", "ERR")
+            if not ask_yn("Continue anyway?", default=False):
+                return False
+            return True
+        else:
+            # User declined auto-install
+            if not ask_yn("Continue without installing? (builds may fail)", default=False):
+                return False
+            return True
+    else:
+        log("No supported package manager detected for auto-install.", "WARN")
+        log("Please install the missing dependencies manually.", "WARN")
+        if not ask_yn("Continue anyway?", default=False):
+            return False
+        return True
 
 
 def extract_project_ref(supa_url):
@@ -383,6 +548,8 @@ def main():
     # Quick mode: just build without setup
     if len(sys.argv) > 1 and sys.argv[1] == "build":
         log("Build-only mode")
+        if not check_dependencies(build_payload=True):
+            sys.exit(1)
         if build_payload():
             log("Build complete", "OK")
         else:
@@ -392,6 +559,14 @@ def main():
 
     # Full setup
     cfg = collect_config()
+
+    # Check dependencies before doing anything else
+    if not check_dependencies(
+        build_payload=cfg.get("build_payload", False),
+        build_apk=cfg.get("build_apk", False),
+    ):
+        log("Aborting setup — install missing dependencies and try again.", "ERR")
+        sys.exit(1)
 
     print()
     log("=" * 50)
