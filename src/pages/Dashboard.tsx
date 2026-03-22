@@ -68,6 +68,7 @@ function getOsIcon(os: string | null): string {
   if (lower.includes("windows")) return "W";
   if (lower.includes("linux")) return "L";
   if (lower.includes("mac") || lower.includes("darwin")) return "M";
+  if (lower.includes("android")) return "A";
   return "";
 }
 
