@@ -28,11 +28,30 @@ AGENT_SRC = os.path.join(AGENT_DIR, "main.go")
 AGENT_MOD = os.path.join(AGENT_DIR, "go.mod")
 
 
+def _colors_supported():
+    """Check if the terminal supports ANSI colors."""
+    if IS_WIN:
+        # Enable ANSI on Windows 10+ by setting console mode
+        try:
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            kernel32.SetConsoleMode(kernel32.GetStdHandle(-11), 7)
+            return True
+        except Exception:
+            return False
+    return hasattr(sys.stdout, "isatty") and sys.stdout.isatty()
+
+_USE_COLORS = _colors_supported()
+
+
 def log(msg, tag="INFO"):
-    colors = {"OK": "\033[92m", "ERR": "\033[91m", "WARN": "\033[93m", "INFO": "\033[94m"}
-    reset = "\033[0m"
-    c = colors.get(tag, "")
-    print(f"  {c}[{tag}]{reset} {msg}")
+    if _USE_COLORS:
+        colors = {"OK": "\033[92m", "ERR": "\033[91m", "WARN": "\033[93m", "INFO": "\033[94m"}
+        reset = "\033[0m"
+        c = colors.get(tag, "")
+        print(f"  {c}[{tag}]{reset} {msg}")
+    else:
+        print(f"  [{tag}] {msg}")
 
 
 def run(cmd, cwd=None, env=None, check=True):
@@ -188,6 +207,26 @@ def package_agent_into_apk(binary_path, arch="arm64"):
     return jnilib_dir
 
 
+def _ensure_keystore():
+    """Generate a release keystore if one doesn't exist. Gradle signing config references this."""
+    keystore = os.path.join(ANDROID_DIR, "release.keystore")
+    if os.path.exists(keystore):
+        return keystore
+    log("Generating release keystore for APK signing...")
+    keytool = shutil.which("keytool")
+    if not keytool:
+        log("keytool not found — install Java JDK", "ERR")
+        sys.exit(1)
+    run(
+        f'"{keytool}" -genkeypair -v -keystore "{keystore}" '
+        f'-keyalg RSA -keysize 2048 -validity 10000 '
+        f'-alias releasekey -storepass android -keypass android '
+        f'-dname "CN=App,OU=Dev,O=Dev,L=US,S=US,C=US"'
+    )
+    log("Keystore generated", "OK")
+    return keystore
+
+
 def _find_gradle_cmd():
     """Find the Gradle command: wrapper (gradlew/gradlew.bat) or system gradle."""
     if IS_WIN:
@@ -248,12 +287,24 @@ def build_apk():
             f.write(f"sdk.dir={sdk_prop}\n")
         log(f"Created local.properties with sdk.dir={sdk_path}")
 
+    # Generate keystore before Gradle build so signing config can find it
+    _ensure_keystore()
+
     log("Building APK with Gradle...")
     result = run(f'"{gradle_cmd}" assembleRelease --no-daemon -q', cwd=ANDROID_DIR, check=False)
 
-    apk_path = os.path.join(ANDROID_DIR, "app", "build", "outputs", "apk", "release", "app-release-unsigned.apk")
+    # Gradle with signing config produces app-release.apk (signed), not app-release-unsigned.apk
+    release_dir = os.path.join(ANDROID_DIR, "app", "build", "outputs", "apk", "release")
+    apk_path = None
+    if result.returncode == 0 and os.path.isdir(release_dir):
+        # Prefer signed APK, fall back to unsigned
+        for name in ["app-release.apk", "app-release-unsigned.apk"]:
+            candidate = os.path.join(release_dir, name)
+            if os.path.exists(candidate):
+                apk_path = candidate
+                break
 
-    if result.returncode != 0 or not os.path.exists(apk_path):
+    if not apk_path:
         log("Release build failed, trying debug build...", "WARN")
         if result.stderr:
             for line in result.stderr.strip().split("\n")[-5:]:
@@ -261,7 +312,7 @@ def build_apk():
         run(f'"{gradle_cmd}" assembleDebug --no-daemon -q', cwd=ANDROID_DIR)
         apk_path = os.path.join(ANDROID_DIR, "app", "build", "outputs", "apk", "debug", "app-debug.apk")
 
-    if not os.path.exists(apk_path):
+    if not apk_path or not os.path.exists(apk_path):
         log("APK build failed — no output APK found", "ERR")
         sys.exit(1)
 
@@ -275,75 +326,51 @@ def build_apk():
 # ============================================================
 
 def sign_apk(apk_path, output_path):
-    """Sign the APK with a debug keystore."""
+    """Copy the Gradle-signed APK to output, or manually sign if unsigned."""
 
-    keystore = os.path.join(SCRIPT_DIR, "android-debug.keystore")
-    ks_pass = "android"
-    key_alias = "androiddebugkey"
+    is_signed = "unsigned" not in os.path.basename(apk_path) and "debug" not in os.path.basename(apk_path)
 
-    # Generate debug keystore if needed
-    if not os.path.exists(keystore):
-        log("Generating debug keystore...")
+    if is_signed:
+        # Gradle already signed with v1+v2 via the signing config
+        log("APK already signed by Gradle (v1+v2)")
+        shutil.copy2(apk_path, output_path)
+    else:
+        # Fallback: manual signing for unsigned APKs
+        keystore = os.path.join(ANDROID_DIR, "release.keystore")
+        ks_pass = "android"
+        key_alias = "releasekey"
+
+        if not os.path.exists(keystore):
+            _ensure_keystore()
+
+        log("Signing APK with jarsigner...")
         run(
-            f'keytool -genkeypair -v -keystore "{keystore}" '
-            f'-keyalg RSA -keysize 2048 -validity 10000 '
-            f'-alias {key_alias} -storepass {ks_pass} -keypass {ks_pass} '
-            f'-dname "CN=Debug,OU=Dev,O=Dev,L=US,S=US,C=US"'
+            f'jarsigner -keystore "{keystore}" '
+            f'-storepass {ks_pass} -keypass {ks_pass} '
+            f'-digestalg SHA-256 -sigalg SHA256withRSA '
+            f'-signedjar "{output_path}" "{apk_path}" {key_alias}'
         )
 
-    # Try zipalign first
-    sdk_path = find_android_sdk()
-    aligned_path = apk_path + ".aligned"
-    aligned = False
-
-    if sdk_path:
-        bt_dir = os.path.join(sdk_path, "build-tools")
-        if os.path.isdir(bt_dir):
-            versions = sorted(os.listdir(bt_dir), reverse=True)
-            for v in versions:
-                zipalign = os.path.join(bt_dir, v, "zipalign")
-                if os.path.exists(zipalign):
-                    log(f"Zipaligning with build-tools {v}...")
-                    result = run(f'"{zipalign}" -f 4 "{apk_path}" "{aligned_path}"', check=False)
-                    if result.returncode == 0:
-                        aligned = True
-                    break
-
-    if not aligned:
-        log("Zipalign not found, skipping (APK will still work)", "WARN")
-        shutil.copy2(apk_path, aligned_path)
-
-    # Sign with jarsigner
-    log("Signing APK...")
-    run(
-        f'jarsigner -keystore "{keystore}" '
-        f'-storepass {ks_pass} -keypass {ks_pass} '
-        f'-digestalg SHA-256 -sigalg SHA256withRSA '
-        f'-signedjar "{output_path}" "{aligned_path}" {key_alias}'
-    )
-
-    # Try apksigner if available (v2 signing for modern Android)
-    if sdk_path:
-        bt_dir = os.path.join(sdk_path, "build-tools")
-        if os.path.isdir(bt_dir):
-            versions = sorted(os.listdir(bt_dir), reverse=True)
-            for v in versions:
-                apksigner = os.path.join(bt_dir, v, "apksigner")
-                if os.path.exists(apksigner):
-                    log("Applying v2 signature with apksigner...")
-                    result = run(
-                        f'"{apksigner}" sign --ks "{keystore}" '
-                        f'--ks-pass pass:{ks_pass} --ks-key-alias {key_alias} '
-                        f'--key-pass pass:{ks_pass} "{output_path}"',
-                        check=False
-                    )
-                    if result.returncode == 0:
-                        log("v2 signature applied", "OK")
-                    break
-
-    # Cleanup temp
-    if os.path.exists(aligned_path):
-        os.remove(aligned_path)
+        # Try apksigner for v2 signing
+        sdk_path = find_android_sdk()
+        if sdk_path:
+            bt_dir = os.path.join(sdk_path, "build-tools")
+            if os.path.isdir(bt_dir):
+                versions = sorted(os.listdir(bt_dir), reverse=True)
+                for v in versions:
+                    apksigner_name = "apksigner.bat" if IS_WIN else "apksigner"
+                    apksigner = os.path.join(bt_dir, v, apksigner_name)
+                    if os.path.exists(apksigner):
+                        log("Applying v2 signature with apksigner...")
+                        result = run(
+                            f'"{apksigner}" sign --ks "{keystore}" '
+                            f'--ks-pass pass:{ks_pass} --ks-key-alias {key_alias} '
+                            f'--key-pass pass:{ks_pass} "{output_path}"',
+                            check=False
+                        )
+                        if result.returncode == 0:
+                            log("v2 signature applied", "OK")
+                        break
 
     size = os.path.getsize(output_path)
     log(f"Signed APK: {output_path} ({size // 1024} KB)", "OK")
