@@ -205,11 +205,19 @@ def check_dependencies(build_payload=False, build_apk=False):
             log(f"{display:<16} NOT FOUND  (needed for {reason})", "ERR")
             missing.append((display, key, reason))
 
-    # Android SDK isn't a package manager install — check separately
+    # Android SDK/NDK aren't package manager installs — check separately
     if build_apk:
         sdk_found = _check_android_sdk()
         if sdk_found:
             log(f"{'Android SDK':<16} found ({sdk_found})", "OK")
+            # Check for NDK (needed for 32-bit arm builds)
+            ndk_dir = os.path.join(sdk_found, "ndk")
+            ndk_found = os.path.isdir(ndk_dir) and os.listdir(ndk_dir)
+            if ndk_found:
+                log(f"{'Android NDK':<16} found (for 32-bit arm support)", "OK")
+            else:
+                log(f"{'Android NDK':<16} not found (32-bit arm builds will be skipped)", "WARN")
+                log("  Install via: Android Studio > SDK Manager > SDK Tools > NDK", "WARN")
         else:
             log(f"{'Android SDK':<16} NOT FOUND", "ERR")
             log("  Install Android Studio or command-line tools: https://developer.android.com/studio", "WARN")

