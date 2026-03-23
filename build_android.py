@@ -23,6 +23,7 @@ import tempfile
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ANDROID_DIR = os.path.join(SCRIPT_DIR, "android")
 AGENT_DIR = os.path.join(ANDROID_DIR, "agent")
+IS_WIN = sys.platform == "win32"
 AGENT_SRC = os.path.join(AGENT_DIR, "main.go")
 AGENT_MOD = os.path.join(AGENT_DIR, "go.mod")
 
@@ -165,31 +166,53 @@ def package_agent_into_apk(binary_path, arch="arm64"):
     return jnilib_dir
 
 
-def build_apk():
-    """Build APK using Gradle wrapper."""
-
-    gradlew = os.path.join(ANDROID_DIR, "gradlew")
-
-    # Ensure gradlew is executable
-    if os.path.exists(gradlew):
-        os.chmod(gradlew, 0o755)
+def _find_gradle_cmd():
+    """Find the Gradle command: wrapper (gradlew/gradlew.bat) or system gradle."""
+    if IS_WIN:
+        wrapper = os.path.join(ANDROID_DIR, "gradlew.bat")
     else:
-        log("gradlew not found, trying to generate...", "WARN")
-        run("gradle wrapper", cwd=ANDROID_DIR, check=False)
-        if not os.path.exists(gradlew):
-            log("Cannot find or create gradlew. Install Gradle or add the wrapper.", "ERR")
-            sys.exit(1)
+        wrapper = os.path.join(ANDROID_DIR, "gradlew")
+
+    if os.path.exists(wrapper):
+        if not IS_WIN:
+            os.chmod(wrapper, 0o755)
+        return wrapper
+
+    # No wrapper — try to generate one using system gradle
+    system_gradle = shutil.which("gradle")
+    if system_gradle:
+        log("gradlew not found, generating wrapper with system Gradle...", "WARN")
+        run(f'"{system_gradle}" wrapper', cwd=ANDROID_DIR, check=False)
+        if os.path.exists(wrapper):
+            if not IS_WIN:
+                os.chmod(wrapper, 0o755)
+            return wrapper
+        # Wrapper generation failed, fall back to system gradle directly
+        log("Wrapper generation failed, using system Gradle directly", "WARN")
+        return system_gradle
+
+    log("Neither gradlew nor system Gradle found.", "ERR")
+    log("Install Gradle: https://gradle.org/install/", "ERR")
+    sys.exit(1)
+
+
+def build_apk():
+    """Build APK using Gradle wrapper or system Gradle."""
+
+    gradle_cmd = _find_gradle_cmd()
 
     # Check for local.properties
     local_props = os.path.join(ANDROID_DIR, "local.properties")
     sdk_path = find_android_sdk()
     if not os.path.exists(local_props) and sdk_path:
+        # Escape backslashes for local.properties on Windows
+        sdk_prop = sdk_path.replace("\\", "\\\\") if IS_WIN else sdk_path
         with open(local_props, "w") as f:
-            f.write(f"sdk.dir={sdk_path}\n")
+            f.write(f"sdk.dir={sdk_prop}\n")
         log(f"Created local.properties with sdk.dir={sdk_path}")
 
     log("Building APK with Gradle...")
-    result = run("./gradlew assembleRelease --no-daemon -q", cwd=ANDROID_DIR, check=False)
+    result = run(f'"{gradle_cmd}" assembleRelease --no-daemon -q', cwd=ANDROID_DIR, check=False)
 
     apk_path = os.path.join(ANDROID_DIR, "app", "build", "outputs", "apk", "release", "app-release-unsigned.apk")
 
@@ -198,7 +221,7 @@ def build_apk():
         if result.stderr:
             for line in result.stderr.strip().split("\n")[-5:]:
                 log(line, "WARN")
-        run("./gradlew assembleDebug --no-daemon -q", cwd=ANDROID_DIR)
+        run(f'"{gradle_cmd}" assembleDebug --no-daemon -q', cwd=ANDROID_DIR)
         apk_path = os.path.join(ANDROID_DIR, "app", "build", "outputs", "apk", "debug", "app-debug.apk")
 
     if not os.path.exists(apk_path):
@@ -363,12 +386,13 @@ def main():
         sys.exit(1)
 
     # Check Gradle wrapper or system Gradle
-    gradlew = os.path.join(ANDROID_DIR, "gradlew")
+    gradlew = os.path.join(ANDROID_DIR, "gradlew.bat" if IS_WIN else "gradlew")
     if not os.path.exists(gradlew) and not shutil.which("gradle"):
         log("Neither gradlew nor Gradle found.", "ERR")
         log("Install Gradle: https://gradle.org/install/", "ERR")
         log("  Linux (apt): sudo apt install gradle", "ERR")
         log("  macOS (brew): brew install gradle", "ERR")
+        log("  Windows (winget): winget install Gradle.Gradle", "ERR")
         sys.exit(1)
 
     tmpdir = None
