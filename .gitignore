@@ -30,3 +30,10 @@ supabase/.temp/
 __pycache__/
 *.pyc
 
+# Android build artifacts
+*.keystore
+*.apk
+android/local.properties
+android/.gradle/
+android/app/build/
+
