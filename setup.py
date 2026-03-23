@@ -131,6 +131,28 @@ DEPENDENCY_PACKAGES = {
 }
 
 
+def _check_android_sdk():
+    """Check if Android SDK is installed. Returns the path or None."""
+    android_home = os.environ.get("ANDROID_HOME") or os.environ.get("ANDROID_SDK_ROOT")
+    if android_home and os.path.isdir(android_home):
+        return android_home
+    candidates = [
+        os.path.expanduser("~/Android/Sdk"),
+        os.path.expanduser("~/Library/Android/sdk"),
+        "/usr/lib/android-sdk",
+        "/opt/android-sdk",
+    ]
+    if IS_WIN:
+        localappdata = os.environ.get("LOCALAPPDATA", "")
+        if localappdata:
+            candidates.insert(0, os.path.join(localappdata, "Android", "Sdk"))
+        candidates.insert(1, os.path.expanduser("~\\AppData\\Local\\Android\\Sdk"))
+    for c in candidates:
+        if os.path.isdir(c):
+            return c
+    return None
+
+
 def _check_java():
     """Check if Java JDK is installed (keytool + javac)."""
     return shutil.which("javac") is not None or shutil.which("keytool") is not None
@@ -182,6 +204,17 @@ def check_dependencies(build_payload=False, build_apk=False):
         else:
             log(f"{display:<16} NOT FOUND  (needed for {reason})", "ERR")
             missing.append((display, key, reason))
+
+    # Android SDK isn't a package manager install — check separately
+    if build_apk:
+        sdk_found = _check_android_sdk()
+        if sdk_found:
+            log(f"{'Android SDK':<16} found ({sdk_found})", "OK")
+        else:
+            log(f"{'Android SDK':<16} NOT FOUND", "ERR")
+            log("  Install Android Studio or command-line tools: https://developer.android.com/studio", "WARN")
+            log("  Then set ANDROID_HOME env var to the SDK path", "WARN")
+            log("  (build_android.py will prompt you for the path if not set)", "WARN")
 
     if not missing:
         print()

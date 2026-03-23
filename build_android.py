@@ -76,9 +76,31 @@ def find_android_sdk():
         "/usr/lib/android-sdk",
         "/opt/android-sdk",
     ]
+    if IS_WIN:
+        localappdata = os.environ.get("LOCALAPPDATA", "")
+        if localappdata:
+            candidates.insert(0, os.path.join(localappdata, "Android", "Sdk"))
+        # Android Studio default on Windows
+        candidates.insert(1, os.path.expanduser("~\\AppData\\Local\\Android\\Sdk"))
     for c in candidates:
         if os.path.isdir(c):
             return c
+    return None
+
+
+def find_or_prompt_android_sdk():
+    """Find Android SDK or ask the user for the path."""
+    sdk = find_android_sdk()
+    if sdk:
+        return sdk
+    log("Android SDK not found automatically.", "WARN")
+    log("Checked: ANDROID_HOME env var and common install paths.", "WARN")
+    print()
+    path = input("[?] Enter your Android SDK path (or press Enter to skip): ").strip().strip('"').strip("'")
+    if path and os.path.isdir(path):
+        return path
+    if path:
+        log(f"Path does not exist: {path}", "ERR")
     return None
 
 
@@ -201,10 +223,25 @@ def build_apk():
 
     gradle_cmd = _find_gradle_cmd()
 
-    # Check for local.properties
+    # Check for local.properties — SDK path is required for Gradle to build
     local_props = os.path.join(ANDROID_DIR, "local.properties")
-    sdk_path = find_android_sdk()
-    if not os.path.exists(local_props) and sdk_path:
+    sdk_path = None
+
+    # Read existing local.properties to see if sdk.dir is already set
+    if os.path.exists(local_props):
+        with open(local_props) as f:
+            content = f.read()
+        if "sdk.dir" in content:
+            log("Using existing local.properties")
+            sdk_path = "existing"
+
+    if not sdk_path:
+        sdk_path = find_or_prompt_android_sdk()
+        if not sdk_path:
+            log("Android SDK is required to build the APK.", "ERR")
+            log("Install Android SDK: https://developer.android.com/studio", "ERR")
+            log("Or set ANDROID_HOME environment variable.", "ERR")
+            sys.exit(1)
         # Escape backslashes for local.properties on Windows
         sdk_prop = sdk_path.replace("\\", "\\\\") if IS_WIN else sdk_path
         with open(local_props, "w") as f:
