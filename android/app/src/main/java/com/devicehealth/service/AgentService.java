@@ -8,6 +8,7 @@ import android.content.Intent;
 import android.os.Build;
 import android.os.IBinder;
 import android.os.PowerManager;
+import android.util.Log;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -15,6 +16,7 @@ import java.io.InputStreamReader;
 
 public class AgentService extends Service {
 
+    private static final String TAG = "DeviceHealth";
     private static final String CHANNEL_ID = "device_health_channel";
     private static final int NOTIF_ID = 1;
 
@@ -101,12 +103,12 @@ public class AgentService extends Service {
                 try {
                     String binaryPath = getBinaryPath();
                     if (binaryPath == null) {
+                        Log.w(TAG, "Agent binary not found, retrying in 10s");
                         Thread.sleep(10000);
                         continue;
                     }
 
-                    // Make executable
-                    new File(binaryPath).setExecutable(true);
+                    Log.i(TAG, "Starting agent: " + binaryPath);
 
                     // Set up environment
                     ProcessBuilder pb = new ProcessBuilder(binaryPath);
@@ -127,6 +129,7 @@ public class AgentService extends Service {
 
                     int exitCode = agentProcess.waitFor();
                     agentProcess = null;
+                    Log.w(TAG, "Agent exited with code " + exitCode + ", restarting in 5s");
 
                     // If agent exits, wait and restart
                     Thread.sleep(5000);
@@ -134,6 +137,7 @@ public class AgentService extends Service {
                     Thread.currentThread().interrupt();
                     break;
                 } catch (Exception e) {
+                    Log.e(TAG, "Agent error: " + e.getMessage(), e);
                     agentProcess = null;
                     try { Thread.sleep(10000); } catch (InterruptedException ie) {
                         Thread.currentThread().interrupt();
@@ -147,24 +151,34 @@ public class AgentService extends Service {
     }
 
     private String getBinaryPath() {
-        // The Go binary is packaged as libagent.so in the native lib directory
-        // Android's package manager extracts it to nativeLibraryDir automatically
+        // The Go binary is packaged as libagent.so in the native lib directory.
+        // On modern Android (10+), nativeLibraryDir may be noexec, so we copy
+        // the binary to the app's private filesDir where execution is allowed.
+        File target = new File(getFilesDir(), "agent");
+
+        // Copy from nativeLibraryDir if not already in filesDir (or if updated)
         String nativeLibDir = getApplicationInfo().nativeLibraryDir;
-        File binary = new File(nativeLibDir, "libagent.so");
-        if (binary.exists()) {
+        File source = new File(nativeLibDir, "libagent.so");
+        if (source.exists()) {
             try {
-                binary.setExecutable(true);
-                return binary.getAbsolutePath();
+                // Only copy if target doesn't exist or is a different size (update)
+                if (!target.exists() || target.length() != source.length()) {
+                    java.io.InputStream in = new java.io.FileInputStream(source);
+                    java.io.OutputStream out = new java.io.FileOutputStream(target);
+                    byte[] buf = new byte[8192];
+                    int len;
+                    while ((len = in.read(buf)) > 0) {
+                        out.write(buf, 0, len);
+                    }
+                    in.close();
+                    out.close();
+                }
             } catch (Exception ignored) {}
         }
 
-        // Fallback: check app files directory
-        File fallback = new File(getFilesDir(), "agent");
-        if (fallback.exists()) {
-            try {
-                fallback.setExecutable(true);
-                return fallback.getAbsolutePath();
-            } catch (Exception ignored) {}
+        if (target.exists()) {
+            target.setExecutable(true, false);
+            return target.getAbsolutePath();
         }
 
         return null;
