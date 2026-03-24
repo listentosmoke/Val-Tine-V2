@@ -121,12 +121,17 @@ const AppLayout = ({ children }: AppLayoutProps) => {
   }, [globalSearch, clients]);
 
   return (
-    <div className="min-h-screen bg-background flex">
+    <div className="min-h-screen bg-background flex flex-col md:flex-row">
       {/* Sidebar */}
-      <aside
-        className={`${
-          collapsed ? "w-[60px]" : "w-[260px]"
-        } border-r border-border/40 flex flex-col flex-shrink-0 transition-all duration-200`}
+<aside
+  className={`
+    ${collapsed ? "md:w-[60px]" : "md:w-[260px]"}
+    w-full md:w-auto
+    border-b md:border-b-0 md:border-r border-border/40
+    flex flex-col
+    md:h-auto
+    transition-all duration-200
+  `}
         style={{ background: "#0f0f12" }}
       >
         {/* Header */}
@@ -143,7 +148,7 @@ const AppLayout = ({ children }: AppLayoutProps) => {
                 variant="secondary"
                 className="text-[10px] px-1.5 py-0 h-4 bg-primary/10 text-primary border-0 flex-shrink-0"
               >
-                v1.5
+                v1.6
               </Badge>
             </div>
           )}
@@ -297,7 +302,7 @@ const AppLayout = ({ children }: AppLayoutProps) => {
 
       {/* Main */}
       <main className="flex-1 overflow-auto flex flex-col min-w-0">
-        <header className="h-[60px] border-b border-border/40 flex items-center justify-between px-5 bg-card/20 flex-shrink-0">
+        <header className="h-[60px] border-b border-border/40 flex items-center justify-between px-3 md:px-5 bg-card/20 flex-shrink-0 gap-2">
           <div className="flex items-center gap-1.5 text-sm min-w-0">
             {breadcrumb.map((crumb, i) => (
               <span key={i} className="flex items-center gap-1.5 min-w-0">
@@ -322,7 +327,7 @@ const AppLayout = ({ children }: AppLayoutProps) => {
             ))}
           </div>
 
-          <div className="relative max-w-sm w-full mx-4">
+          <div className="relative w-full md:max-w-sm md:mx-4">
             <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground/40" />
             <Input
               placeholder="Search machines..."
