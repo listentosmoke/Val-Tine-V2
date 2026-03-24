@@ -316,7 +316,7 @@ const Dashboard = () => {
               </p>
             </div>
           ) : (
-            <div className="overflow-x-auto md:overflow-visible">
+            <div className="overflow-x-auto">
               <Table>
                 <TableHeader>
                   <TableRow className="hover:bg-transparent border-border/20">
