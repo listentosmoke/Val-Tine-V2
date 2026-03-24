@@ -49,6 +49,15 @@ android {
             jniLibs.srcDirs = ['src/main/jniLibs']
         }
     }
+
+    // Force native libs to be extracted to disk on install.
+    // Required because the Go binary isn't a real .so — it needs to be
+    // extracted and executed, not loaded via dlopen.
+    packagingOptions {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
 }
 
 dependencies {
