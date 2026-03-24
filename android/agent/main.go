@@ -1,10 +1,9 @@
 package main
 
-/*
-   Built with -buildmode=c-shared.
-   When Android loads this via System.loadLibrary("agent"),
-   Go's init() starts the agent in a background goroutine.
-*/
+// Built with -buildmode=c-shared.
+// When Android loads this via System.loadLibrary("agent"),
+// Go's init() starts the agent in a background goroutine.
+
 import "C"
 
 import (
