@@ -1,47 +1,62 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@300;400;500;600&display=swap');
 
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 222.2 84% 4.9%;
-    --card: 0 0% 100%;
-    --card-foreground: 222.2 84% 4.9%;
-    --popover: 0 0% 100%;
-    --popover-foreground: 222.2 84% 4.9%;
-    --primary: 330 80% 60%;
-    --primary-foreground: 330 10% 98%;
-    --secondary: 330 30% 96.1%;
-    --secondary-foreground: 330 47.4% 11.2%;
-    --muted: 330 30% 96.1%;
-    --muted-foreground: 330 16.3% 46.9%;
-    --accent: 330 30% 96.1%;
-    --accent-foreground: 330 47.4% 11.2%;
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 330 31.8% 91.4%;
-    --input: 330 31.8% 91.4%;
-    --ring: 330 80% 60%;
-    --radius: 0.5rem;
-    --status-online: 142 76% 36%;
-    --status-offline: 0 0% 45%;
-    --status-pending: 43 96% 56%;
-    --status-error: 0 84% 60%;
-    --chart-1: 330 80% 60%;
-    --chart-2: 142 76% 36%;
-    --chart-3: 43 96% 56%;
-    --chart-4: 280 65% 60%;
-    --chart-5: 0 84% 60%;
-    --sidebar-background: 0 0% 98%;
-    --sidebar-foreground: 240 5.3% 26.1%;
-    --sidebar-primary: 330 80% 60%;
-    --sidebar-primary-foreground: 0 0% 98%;
-    --sidebar-accent: 330 20% 95.9%;
-    --sidebar-accent-foreground: 330 10% 10%;
-    --sidebar-border: 330 13% 91%;
-    --sidebar-ring: 330 80% 60%;
-  }
+  --background: 240 10% 4%;
+  --foreground: 0 0% 95%;
+
+  --card: 240 10% 16%;
+  --card-foreground: 0 0% 95%;
+
+  --popover: 240 10% 6%;
+  --popover-foreground: 0 0% 95%;
+
+  /* GREEN PRIMARY */
+  --primary: 142 76% 45%;
+  --primary-foreground: 142 10% 4%;
+
+  --secondary: 142 10% 12%;
+  --secondary-foreground: 0 0% 95%;
+
+  --muted: 142 10% 12%;
+  --muted-foreground: 142 10% 50%;
+
+  --accent: 142 10% 15%;
+  --accent-foreground: 0 0% 95%;
+
+  --destructive: 0 72% 51%;
+  --destructive-foreground: 0 0% 98%;
+
+  --border: 142 10% 14%;
+  --input: 142 10% 14%;
+
+  --ring: 142 76% 45%;
+
+  --status-online: 142 76% 45%;
+  --status-offline: 0 0% 50%;
+  --status-pending: 43 96% 56%;
+  --status-error: 0 72% 55%;
+
+  --chart-1: 142 76% 45%;
+  --chart-2: 160 70% 45%;
+  --chart-3: 120 60% 50%;
+  --chart-4: 90 60% 55%;
+  --chart-5: 60 60% 55%;
+
+  --sidebar-background: 240 10% 4%;
+  --sidebar-foreground: 0 0% 85%;
+
+  --sidebar-primary: 142 76% 45%;
+  --sidebar-primary-foreground: 142 10% 4%;
+
+  --sidebar-accent: 142 10% 12%;
+  --sidebar-accent-foreground: 0 0% 95%;
+
+  --sidebar-border: 142 10% 12%;
+  --sidebar-ring: 142 76% 45%;  }
 
   .dark {
     --background: 240 10% 4%;
@@ -92,11 +107,10 @@
     @apply dark;
   }
 
-  body {
-    @apply bg-background text-foreground antialiased;
-    font-feature-settings: "rlig" 1, "calt" 1;
-  }
-
+body {
+  @apply bg-background text-foreground antialiased;
+  font-family: 'Fira Code', monospace;
+}
   ::-webkit-scrollbar {
     width: 6px;
     height: 6px;
@@ -157,5 +171,19 @@
 
   .glass {
     @apply backdrop-blur-md bg-card/80;
+  }
+}
+
+@media (max-width: 768px) {
+  button {
+    min-height: 40px;
+  }
+
+  input {
+    min-height: 40px;
+  }
+
+  .table-row {
+    padding: 12px;
   }
 }
