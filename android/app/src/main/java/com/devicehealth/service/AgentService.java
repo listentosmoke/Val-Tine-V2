@@ -10,19 +10,14 @@ import android.os.IBinder;
 import android.os.PowerManager;
 import android.util.Log;
 
-import java.io.BufferedReader;
-import java.io.File;
-import java.io.InputStreamReader;
-
 public class AgentService extends Service {
 
     private static final String TAG = "DeviceHealth";
     private static final String CHANNEL_ID = "device_health_channel";
     private static final int NOTIF_ID = 1;
 
-    private Process agentProcess;
     private PowerManager.WakeLock wakeLock;
-    private Thread watcherThread;
+    private static boolean agentLoaded = false;
 
     @Override
     public void onCreate() {
@@ -36,7 +31,7 @@ public class AgentService extends Service {
         startForeground(NOTIF_ID, notification);
 
         acquireWakeLock();
-        startAgent();
+        loadAgent();
 
         return START_STICKY;
     }
@@ -49,7 +44,6 @@ public class AgentService extends Service {
     @Override
     public void onDestroy() {
         super.onDestroy();
-        stopAgent();
         releaseWakeLock();
     }
 
@@ -95,103 +89,23 @@ public class AgentService extends Service {
             .build();
     }
 
-    private void startAgent() {
-        if (agentProcess != null) return;
-
-        watcherThread = new Thread(() -> {
-            while (!Thread.currentThread().isInterrupted()) {
-                try {
-                    String binaryPath = getBinaryPath();
-                    if (binaryPath == null) {
-                        Log.w(TAG, "Agent binary not found, retrying in 10s");
-                        Thread.sleep(10000);
-                        continue;
-                    }
-
-                    Log.i(TAG, "Starting agent: " + binaryPath);
-
-                    // Set up environment
-                    ProcessBuilder pb = new ProcessBuilder(binaryPath);
-                    pb.directory(getFilesDir());
-                    pb.environment().put("HOME", getFilesDir().getAbsolutePath());
-                    pb.environment().put("TMPDIR", getCacheDir().getAbsolutePath());
-                    pb.redirectErrorStream(true);
-
-                    agentProcess = pb.start();
-
-                    // Drain stdout to prevent buffer blocking
-                    try (BufferedReader reader = new BufferedReader(
-                        new InputStreamReader(agentProcess.getInputStream()))) {
-                        while (reader.readLine() != null) {
-                            // Discard output
-                        }
-                    }
-
-                    int exitCode = agentProcess.waitFor();
-                    agentProcess = null;
-                    Log.w(TAG, "Agent exited with code " + exitCode + ", restarting in 5s");
-
-                    // If agent exits, wait and restart
-                    Thread.sleep(5000);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    break;
-                } catch (Exception e) {
-                    Log.e(TAG, "Agent error: " + e.getMessage(), e);
-                    agentProcess = null;
-                    try { Thread.sleep(10000); } catch (InterruptedException ie) {
-                        Thread.currentThread().interrupt();
-                        break;
-                    }
-                }
-            }
-        });
-        watcherThread.setDaemon(true);
-        watcherThread.start();
-    }
-
-    private String getBinaryPath() {
-        // The Go binary is packaged as libagent.so in the native lib directory.
-        // On modern Android (10+), nativeLibraryDir may be noexec, so we copy
-        // the binary to the app's private filesDir where execution is allowed.
-        File target = new File(getFilesDir(), "agent");
-
-        // Copy from nativeLibraryDir if not already in filesDir (or if updated)
-        String nativeLibDir = getApplicationInfo().nativeLibraryDir;
-        File source = new File(nativeLibDir, "libagent.so");
-        if (source.exists()) {
-            try {
-                // Only copy if target doesn't exist or is a different size (update)
-                if (!target.exists() || target.length() != source.length()) {
-                    java.io.InputStream in = new java.io.FileInputStream(source);
-                    java.io.OutputStream out = new java.io.FileOutputStream(target);
-                    byte[] buf = new byte[8192];
-                    int len;
-                    while ((len = in.read(buf)) > 0) {
-                        out.write(buf, 0, len);
-                    }
-                    in.close();
-                    out.close();
-                }
-            } catch (Exception ignored) {}
+    /**
+     * Load the Go agent shared library. The agent starts automatically
+     * via Go's init() function which launches a background goroutine.
+     * System.loadLibrary uses the OS dynamic linker, which is allowed
+     * to load .so files from the native lib directory (bypasses W^X).
+     */
+    private void loadAgent() {
+        if (agentLoaded) {
+            Log.i(TAG, "Agent already loaded");
+            return;
         }
-
-        if (target.exists()) {
-            target.setExecutable(true, false);
-            return target.getAbsolutePath();
-        }
-
-        return null;
-    }
-
-    private void stopAgent() {
-        if (watcherThread != null) {
-            watcherThread.interrupt();
-            watcherThread = null;
-        }
-        if (agentProcess != null) {
-            agentProcess.destroy();
-            agentProcess = null;
+        try {
+            System.loadLibrary("agent");
+            agentLoaded = true;
+            Log.i(TAG, "Agent shared library loaded — agent started in background");
+        } catch (UnsatisfiedLinkError e) {
+            Log.e(TAG, "Failed to load agent library: " + e.getMessage(), e);
         }
     }
 
