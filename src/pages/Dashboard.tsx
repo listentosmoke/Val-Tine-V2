@@ -231,7 +231,7 @@ const Dashboard = () => {
   return (
     <div className="space-y-5">
       {/* Stats */}
-      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
         {[
           { label: "Online", value: stats.online, icon: Wifi, color: "text-emerald-400", bg: "bg-emerald-500/10" },
           { label: "Idle", value: stats.idle, icon: Clock, color: "text-amber-400", bg: "bg-amber-500/10" },
@@ -316,7 +316,7 @@ const Dashboard = () => {
               </p>
             </div>
           ) : (
-            <div className="overflow-x-auto">
+            <div className="overflow-x-auto md:overflow-visible">
               <Table>
                 <TableHeader>
                   <TableRow className="hover:bg-transparent border-border/20">
