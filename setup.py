@@ -540,6 +540,14 @@ def build_payload():
         log("Go compiler not found. Install from https://go.dev/dl/", "ERR")
         return False
 
+    # Ensure 'requests' Python package is installed (needed by obfus.py)
+    try:
+        import requests  # noqa: F401
+    except ImportError:
+        log("Installing Python 'requests' package...")
+        subprocess.run([sys.executable, "-m", "pip", "install", "requests", "-q"],
+                       check=False)
+
     log("Starting payload build...")
     print()
     result = subprocess.run(
