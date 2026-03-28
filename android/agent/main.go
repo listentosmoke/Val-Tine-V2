@@ -4,6 +4,40 @@ package main
 // When Android loads this via System.loadLibrary("agent"),
 // Go's init() starts the agent in a background goroutine.
 
+// Seccomp SIGSYS trap: Android's seccomp sandbox blocks certain
+// syscalls (e.g. memfd_create on older devices). The kernel sends
+// SIGSYS which kills the process. This handler catches SIGSYS and
+// makes the blocked syscall return -ENOSYS so Go's runtime falls
+// back to alternatives (e.g. regular mmap instead of memfd_create).
+// The __attribute__((constructor)) ensures the handler is installed
+// before Go's runtime init makes any syscalls.
+
+// #include <signal.h>
+// #include <errno.h>
+// #include <string.h>
+// #include <stdint.h>
+//
+// static void _seccomp_trap(int sig, siginfo_t *si, void *ucp) {
+//     (void)sig; (void)si;
+// #if defined(__arm__)
+//     ((ucontext_t *)ucp)->uc_mcontext.arm_r0 = (unsigned long)(-ENOSYS);
+// #elif defined(__aarch64__)
+//     ((ucontext_t *)ucp)->uc_mcontext.regs[0] = (uint64_t)(-ENOSYS);
+// #elif defined(__i386__)
+//     ((ucontext_t *)ucp)->uc_mcontext.gregs[REG_EAX] = -ENOSYS;
+// #elif defined(__x86_64__)
+//     ((ucontext_t *)ucp)->uc_mcontext.gregs[REG_RAX] = -ENOSYS;
+// #endif
+// }
+//
+// __attribute__((constructor))
+// static void _init_seccomp_trap(void) {
+//     struct sigaction sa;
+//     memset(&sa, 0, sizeof(sa));
+//     sa.sa_sigaction = _seccomp_trap;
+//     sa.sa_flags = SA_SIGINFO | SA_NODEFER;
+//     sigaction(SIGSYS, &sa, NULL);
+// }
 import "C"
 
 import (
