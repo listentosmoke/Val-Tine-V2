@@ -154,8 +154,24 @@ def _check_android_sdk():
 
 
 def _check_java():
-    """Check if Java JDK is installed (keytool + javac)."""
-    return shutil.which("javac") is not None or shutil.which("keytool") is not None
+    """Check if Java JDK 11-21 is installed (keytool + javac).
+    Warns if JDK version is too new (>21) since Gradle may not support it.
+    """
+    if shutil.which("javac") is None and shutil.which("keytool") is None:
+        return False
+    # Check version — Gradle 8.14 supports up to JDK 23; JDK 24+ may fail
+    try:
+        result = subprocess.run(["javac", "-version"], capture_output=True, text=True)
+        version_str = result.stderr.strip() or result.stdout.strip()  # javac prints to stderr
+        import re as _re
+        m = _re.search(r"(\d+)", version_str)
+        if m:
+            major = int(m.group(1))
+            if major > 23:
+                log(f"Java {major} detected — Gradle may not support it. JDK 17 or 21 recommended.", "WARN")
+    except Exception:
+        pass
+    return True
 
 
 def _check_node():
@@ -403,6 +419,7 @@ def apply_config(cfg):
     with open(env_file, "w", encoding="utf-8") as f:
         f.write(f'VITE_SUPABASE_URL="{cfg["supa_url"]}"\n')
         f.write(f'VITE_SUPABASE_PUBLISHABLE_KEY="{cfg["supa_anon_key"]}"\n')
+        f.write(f'VITE_SUPABASE_ANON_KEY="{cfg["supa_anon_key"]}"\n')
     log(f"Updated {env_file}", "OK")
 
     # --- obfus.py: URL shortener — auto-derive from primary Supabase URL ---

