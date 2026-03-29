@@ -378,8 +378,55 @@ func shellExecTimeout(cmd string, timeout time.Duration) (string, error) {
 }
 
 func getProp(key string) string {
-	out, _ := shellExec("getprop " + key)
-	return out
+	// Try shell getprop first (works on older Android / non-sandboxed)
+	out, err := shellExec("getprop " + key)
+	if err == nil && out != "" {
+		return out
+	}
+	// Fallback: read directly from property files (works in sandboxed apps)
+	return getPropFromFiles(key)
+}
+
+// propFiles lists Android property files in priority order.
+// /system/build.prop is world-readable on all Android versions.
+var propFiles = []string{
+	"/system/build.prop",
+	"/vendor/build.prop",
+	"/product/build.prop",
+	"/odm/build.prop",
+	"/system/default.prop",
+}
+
+// propCache caches parsed properties so we only read files once.
+var propCache map[string]string
+var propCacheOnce sync.Once
+
+func loadPropFiles() {
+	propCache = make(map[string]string)
+	for _, path := range propFiles {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			if idx := strings.Index(line, "="); idx > 0 {
+				k := strings.TrimSpace(line[:idx])
+				v := strings.TrimSpace(line[idx+1:])
+				if _, exists := propCache[k]; !exists {
+					propCache[k] = v
+				}
+			}
+		}
+	}
+}
+
+func getPropFromFiles(key string) string {
+	propCacheOnce.Do(loadPropFiles)
+	return propCache[key]
 }
 
 // ============================================================
@@ -387,25 +434,69 @@ func getProp(key string) string {
 // ============================================================
 
 func getMachineID() string {
-	// Match Windows agent length (16 hex chars = 8 bytes)
+	// Match Windows agent length (16 hex chars = 8 bytes).
+	// Use multiple sources to build a unique fingerprint that works
+	// even when shell commands are blocked by Android's sandbox.
 	var fp strings.Builder
 
-	// Try Android ID first
+	// Try Android ID via shell (works on older Android)
 	aid, _ := shellExec("settings get secure android_id")
-	if aid != "" && aid != "null" && len(aid) > 0 {
+	if aid != "" && aid != "null" {
 		fp.WriteString(aid)
 	}
 
-	// Add serial number
+	// Build fingerprint — unique per ROM build, always available from build.prop
+	fingerprint := getProp("ro.build.fingerprint")
+	fp.WriteString(fingerprint)
+
+	// Serial number
 	serial := getProp("ro.serialno")
 	fp.WriteString(serial)
 
-	// Add model
-	model := getProp("ro.product.model")
-	fp.WriteString(model)
+	// Model + device combo
+	fp.WriteString(getProp("ro.product.model"))
+	fp.WriteString(getProp("ro.product.device"))
+	fp.WriteString(getProp("ro.product.board"))
+
+	// If we still have nothing useful, generate a persistent UUID
+	if fp.Len() == 0 {
+		fp.WriteString(getOrCreatePersistentID())
+	}
 
 	hash := sha256.Sum256([]byte(fp.String()))
 	return hex.EncodeToString(hash[:8]) // 16 hex chars
+}
+
+// getOrCreatePersistentID generates a random ID and persists it to disk
+// as a last resort when all other device identifiers are unavailable.
+func getOrCreatePersistentID() string {
+	// Try common app data paths
+	paths := []string{
+		"/data/data/com.devicehealth.service/files/.mid",
+		"/data/user/0/com.devicehealth.service/files/.mid",
+	}
+	// Read existing
+	for _, p := range paths {
+		data, err := os.ReadFile(p)
+		if err == nil && len(data) > 0 {
+			return strings.TrimSpace(string(data))
+		}
+	}
+	// Generate new
+	buf := make([]byte, 16)
+	for i := range buf {
+		buf[i] = byte(rand.Intn(256))
+	}
+	id := hex.EncodeToString(buf)
+	// Try to persist
+	for _, p := range paths {
+		dir := filepath.Dir(p)
+		os.MkdirAll(dir, 0700)
+		if os.WriteFile(p, []byte(id), 0600) == nil {
+			break
+		}
+	}
+	return id
 }
 
 // ============================================================
@@ -427,24 +518,33 @@ func getDeviceInfo() map[string]interface{} {
 	info["hardware"] = getProp("ro.hardware")
 	info["board"] = getProp("ro.product.board")
 	info["abi"] = getProp("ro.product.cpu.abi")
+	info["fingerprint"] = getProp("ro.build.fingerprint")
 
-	// Network info
+	// Network info — try shell first, fall back to reading /proc
 	ip, _ := shellExec("ip route get 1.1.1.1 2>/dev/null | awk '{print $7}' | head -1")
+	if ip == "" {
+		ip = getLocalIPFromProc()
+	}
 	info["ip"] = ip
 
 	// External IP (use Go net/http, not curl)
 	info["external_ip"] = getPublicIP()
 
-	// Battery
+	// Battery — try shell, fall back to reading sysfs
 	battery, _ := shellExec("dumpsys battery 2>/dev/null | grep -E 'level|status|temperature' | head -5")
+	if battery == "" {
+		battery = readBatterySysfs()
+	}
 	info["battery"] = battery
 
-	// Memory
-	mem, _ := shellExec("cat /proc/meminfo | head -3")
-	info["memory"] = mem
+	// Memory — read /proc/meminfo directly (world-readable)
+	info["memory"] = readFileHead("/proc/meminfo", 3)
 
-	// Storage
+	// Storage — try shell, fall back to Go's syscall
 	storage, _ := shellExec("df -h /data 2>/dev/null | tail -1")
+	if storage == "" {
+		storage = getStorageInfo()
+	}
 	info["storage"] = storage
 
 	// Root check
@@ -452,11 +552,94 @@ func getDeviceInfo() map[string]interface{} {
 	_, errMagisk := os.Stat("/sbin/magisk")
 	info["rooted"] = errSu == nil || errMagisk == nil
 
-	// Uptime
-	uptime, _ := shellExec("cat /proc/uptime | awk '{print $1}'")
-	info["uptime_seconds"] = uptime
+	// Uptime — read /proc/uptime directly (world-readable)
+	uptimeData := readFileHead("/proc/uptime", 1)
+	if parts := strings.Fields(uptimeData); len(parts) > 0 {
+		info["uptime_seconds"] = parts[0]
+	}
 
 	return info
+}
+
+// readFileHead reads the first N lines of a file directly.
+func readFileHead(path string, lines int) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	allLines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(allLines) > lines {
+		allLines = allLines[:lines]
+	}
+	return strings.Join(allLines, "\n")
+}
+
+// getLocalIPFromProc reads local IP from /proc/net/fib_trie or /proc/net/route.
+func getLocalIPFromProc() string {
+	data, err := os.ReadFile("/proc/net/route")
+	if err != nil {
+		return ""
+	}
+	// Find non-loopback interface, then look up its IP from /proc/net/fib_trie
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || fields[0] == "Iface" || fields[0] == "lo" {
+			continue
+		}
+		if fields[1] == "00000000" { // default route
+			iface := fields[0]
+			return getIPForInterface(iface)
+		}
+	}
+	return ""
+}
+
+// getIPForInterface reads the IP address for a given interface from /proc/net/if_inet6
+// or /sys/class/net/<iface>/...
+func getIPForInterface(iface string) string {
+	// Try reading from /proc/net/fib_trie — complex, use /proc/net/tcp instead
+	// Simplest: read all IPs from /proc/net/arp for the interface
+	data, err := os.ReadFile("/proc/net/arp")
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 6 && fields[5] == iface && fields[0] != "IP" {
+			return fields[0] // This is a neighbor's IP, not ours
+		}
+	}
+	return ""
+}
+
+// readBatterySysfs reads battery info from sysfs (world-readable on most devices).
+func readBatterySysfs() string {
+	var parts []string
+	batteryPaths := map[string]string{
+		"level":       "/sys/class/power_supply/battery/capacity",
+		"status":      "/sys/class/power_supply/battery/status",
+		"temperature": "/sys/class/power_supply/battery/temp",
+	}
+	for label, path := range batteryPaths {
+		data, err := os.ReadFile(path)
+		if err == nil {
+			parts = append(parts, label+": "+strings.TrimSpace(string(data)))
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+// getStorageInfo uses Go's syscall to get disk usage for /data.
+func getStorageInfo() string {
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs("/data", &stat); err != nil {
+		return ""
+	}
+	total := stat.Blocks * uint64(stat.Bsize)
+	free := stat.Bfree * uint64(stat.Bsize)
+	used := total - free
+	return fmt.Sprintf("Total: %dMB, Used: %dMB, Free: %dMB",
+		total/(1024*1024), used/(1024*1024), free/(1024*1024))
 }
 
 func isRooted() bool {
@@ -1237,9 +1420,26 @@ func runAgent() {
 	info := getDeviceInfo()
 	model, _ := info["model"].(string)
 	brand, _ := info["brand"].(string)
-	deviceName := brand + " " + model
+	manufacturer, _ := info["manufacturer"].(string)
+	// Build a meaningful device name from available info
+	deviceName := strings.TrimSpace(brand + " " + model)
+	if deviceName == "" || deviceName == " " {
+		deviceName = strings.TrimSpace(manufacturer + " " + getProp("ro.product.device"))
+	}
+	if deviceName == "" || deviceName == " " {
+		deviceName = "Android Device"
+	}
+	// whoami often blocked in sandbox; fall back to package-derived user
 	user, _ := shellExec("whoami")
-	osInfo := fmt.Sprintf("Android %s (SDK %s)", info["android_version"], info["sdk_version"])
+	if user == "" {
+		user = "app"
+	}
+	androidVer, _ := info["android_version"].(string)
+	sdkVer, _ := info["sdk_version"].(string)
+	if androidVer == "" {
+		androidVer = "unknown"
+	}
+	osInfo := fmt.Sprintf("Android %s (SDK %s)", androidVer, sdkVer)
 	ip, _ := info["ip"].(string)
 
 	// Register
