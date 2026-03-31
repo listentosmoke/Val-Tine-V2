@@ -29,8 +29,11 @@ interface FileEntry {
   size?: number;
 }
 
-const FileManagerTab = ({ machineId }: { machineId: string }) => {
-  const [path, setPath] = useState("C:\\");
+const FileManagerTab = ({ machineId, clientOs }: { machineId: string; clientOs?: string | null }) => {
+  const isAndroid = clientOs?.toLowerCase().includes("android") ?? false;
+  const defaultPath = isAndroid ? "/sdcard" : "C:\\";
+  const sep = isAndroid ? "/" : "\\";
+  const [path, setPath] = useState(defaultPath);
   const [files, setFiles] = useState<FileEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [uploadOpen, setUploadOpen] = useState(false);
@@ -58,25 +61,39 @@ const FileManagerTab = ({ machineId }: { machineId: string }) => {
       return;
     }
 
-    // Parse dir /b output
-    const lines = result.result
-      .split("\n")
-      .map((l) => l.trim())
-      .filter(Boolean);
-    const normalizedPath = targetPath.endsWith("\\")
-      ? targetPath
-      : targetPath + "\\";
+    // Try JSON parse first (Android agent returns JSON), fall back to line-based
+    let entries: FileEntry[] = [];
+    try {
+      const parsed = JSON.parse(result.result);
+      if (Array.isArray(parsed)) {
+        entries = parsed.map((item: any) => ({
+          name: item.name,
+          path: item.path || (targetPath.replace(/[\\\/]+$/, "") + sep + item.name),
+          is_dir: item.is_dir ?? !item.name.includes("."),
+          size: item.size,
+        }));
+      }
+    } catch {
+      // Fallback: line-based parsing for Windows agents
+      const lines = result.result
+        .split("\n")
+        .map((l: string) => l.trim())
+        .filter(Boolean);
+      const normalizedPath = targetPath.endsWith(sep)
+        ? targetPath
+        : targetPath + sep;
 
-    const entries: FileEntry[] = lines
-      .filter((name) => !name.startsWith("Error"))
-      .map((name) => {
-        const hasExt = name.includes(".");
-        return {
-          name,
-          path: normalizedPath + name,
-          is_dir: !hasExt,
-        };
-      });
+      entries = lines
+        .filter((name: string) => !name.startsWith("Error"))
+        .map((name: string) => {
+          const hasExt = name.includes(".");
+          return {
+            name,
+            path: normalizedPath + name,
+            is_dir: !hasExt,
+          };
+        });
+    }
 
     // Sort: directories first, then files
     entries.sort((a, b) => {
@@ -95,9 +112,9 @@ const FileManagerTab = ({ machineId }: { machineId: string }) => {
     if (cmdId) toast.success(`Download requested: ${fileName}`);
   };
 
-  const joinWinPath = (dir: string, name: string) => {
+  const joinPath = (dir: string, name: string) => {
     const cleanDir = dir.replace(/[\\\/]+$/, "");
-    return `${cleanDir}\\${name}`;
+    return `${cleanDir}${sep}${name}`;
   };
 
   const getBaseName = (p: string) => {
@@ -133,8 +150,13 @@ const FileManagerTab = ({ machineId }: { machineId: string }) => {
   };
 
   const goUp = () => {
-    const parent = path.replace(/\\[^\\]+\\?$/, "\\") || "C:\\";
-    listDirectory(parent);
+    if (isAndroid) {
+      const parent = path.replace(/\/[^/]+\/?$/, "") || "/";
+      listDirectory(parent);
+    } else {
+      const parent = path.replace(/\\[^\\]+\\?$/, "\\") || "C:\\";
+      listDirectory(parent);
+    }
   };
 
   return (
@@ -269,7 +291,7 @@ const FileManagerTab = ({ machineId }: { machineId: string }) => {
           </DialogHeader>
           <div className="space-y-3">
             <Input
-              placeholder="Remote path (e.g. C:\Users\admin\file.txt)"
+              placeholder={isAndroid ? "Remote path (e.g. /sdcard/Download/file.txt)" : "Remote path (e.g. C:\\Users\\admin\\file.txt)"}
               value={uploadPath}
               onChange={(e) => setUploadPath(e.target.value)}
               className="font-mono text-sm"
@@ -283,7 +305,7 @@ const FileManagerTab = ({ machineId }: { machineId: string }) => {
                 setUploadPath((prev) => {
                   if (prev && hasFileName(prev)) return prev;
                   const dir = (prev || path).trim() || path;
-                  return joinWinPath(dir, f.name);
+                  return joinPath(dir, f.name);
                 });
               }}
               className="block w-full text-sm text-muted-foreground file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:bg-primary file:text-primary-foreground hover:file:bg-primary/90"

