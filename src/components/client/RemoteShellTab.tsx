@@ -31,10 +31,13 @@ interface Process {
 const RemoteShellTab = ({
   machineId,
   machineName,
+  clientOs,
 }: {
   machineId: string;
   machineName: string;
+  clientOs?: string | null;
 }) => {
+  const isAndroid = clientOs?.toLowerCase().includes("android") ?? false;
   const [lines, setLines] = useState<ShellLine[]>([
     {
       id: "welcome",
@@ -300,7 +303,7 @@ const RemoteShellTab = ({
             onSubmit={handleSubmit}
             className="flex items-center border-t border-border/20 bg-[hsl(222,47%,6%)] p-2 gap-2"
           >
-            <span className="text-emerald-400 font-mono text-sm pl-2">$</span>
+            <span className="text-emerald-400 font-mono text-sm pl-2">{isAndroid ? "#" : "$"}</span>
             <Input
               ref={inputRef}
               value={input}

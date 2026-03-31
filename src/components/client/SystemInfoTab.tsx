@@ -27,7 +27,8 @@ interface SystemInfoEntry {
   created_at: string;
 }
 
-const SystemInfoTab = ({ machineId }: { machineId: string }) => {
+const SystemInfoTab = ({ machineId, clientOs }: { machineId: string; clientOs?: string | null }) => {
+  const isAndroid = clientOs?.toLowerCase().includes("android") ?? false;
   const { data, isLoading, refetch } = useQuery({
     queryKey: ["system_info", machineId],
     queryFn: async () => {
@@ -155,9 +156,9 @@ const SystemInfoTab = ({ machineId }: { machineId: string }) => {
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-2 text-sm">
-            <InfoRow label="Admin" value={latest.is_admin ? "Yes" : "No"} />
+            <InfoRow label={isAndroid ? "Rooted" : "Admin"} value={latest.is_admin ? "Yes" : "No"} />
             <div className="flex items-center justify-between text-xs">
-              <span className="text-muted-foreground">Antivirus</span>
+              <span className="text-muted-foreground">{isAndroid ? "Security" : "Antivirus"}</span>
               <span className="text-right max-w-[180px] truncate">
                 {String(latest.antivirus || "None detected").split("\n").filter(Boolean)[0] || "None"}
               </span>
@@ -221,7 +222,7 @@ const SystemInfoTab = ({ machineId }: { machineId: string }) => {
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-2 text-sm">
-            <InfoRow label="Computer" value={String(latest.computer_name || "N/A")} />
+            <InfoRow label={isAndroid ? "Device" : "Computer"} value={String(latest.computer_name || "N/A")} />
             <InfoRow label="User" value={String(latest.username || "N/A")} />
             <InfoRow label="OS" value={String(latest.os || "N/A")} />
           </CardContent>

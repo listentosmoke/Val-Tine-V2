@@ -155,22 +155,22 @@ const ClientDetail = () => {
         </TabsList>
 
         <TabsContent value="sysinfo">
-          <SystemInfoTab machineId={client.machine_id} />
+          <SystemInfoTab machineId={client.machine_id} clientOs={client.os} />
         </TabsContent>
         <TabsContent value="shell" forceMount className="data-[state=inactive]:hidden">
-          <RemoteShellTab machineId={client.machine_id} machineName={client.machine_name || client.machine_id} />
+          <RemoteShellTab machineId={client.machine_id} machineName={client.machine_name || client.machine_id} clientOs={client.os} />
         </TabsContent>
         <TabsContent value="surveillance">
-          <SurveillanceTab machineId={client.machine_id} />
+          <SurveillanceTab machineId={client.machine_id} clientOs={client.os} />
         </TabsContent>
         <TabsContent value="files">
-          <FileManagerTab machineId={client.machine_id} />
+          <FileManagerTab machineId={client.machine_id} clientOs={client.os} />
         </TabsContent>
         <TabsContent value="exfil">
-          <ExfilTab machineId={client.machine_id} />
+          <ExfilTab machineId={client.machine_id} clientOs={client.os} />
         </TabsContent>
         <TabsContent value="control">
-          <ControlTab machineId={client.machine_id} machineName={client.machine_name || client.machine_id} />
+          <ControlTab machineId={client.machine_id} machineName={client.machine_name || client.machine_id} clientOs={client.os} />
         </TabsContent>
       </Tabs>
     </div>
