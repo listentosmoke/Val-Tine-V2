@@ -912,11 +912,6 @@ def stage_compile_payload(raw_payload, xor_key, rc4_key, litterbox):
         with open(src_path, "w", encoding="utf-8") as f:
             f.write(raw_payload)
 
-        # Copy exe_main.go (provides func main for EXE builds)
-        exe_main_src = os.path.join(os.path.dirname(os.path.abspath(__file__)), "exe_main.go")
-        if os.path.exists(exe_main_src):
-            shutil.copy2(exe_main_src, os.path.join(tmpdir, "exe_main.go"))
-
         out_path = os.path.join(tmpdir, "payload.exe")
         env = os.environ.copy()
         env["GOOS"] = "windows"

