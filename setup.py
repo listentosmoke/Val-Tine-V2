@@ -154,10 +154,18 @@ def _check_android_sdk():
 
 
 def _check_java():
-    """Check if Java JDK 11-21 is installed (keytool + javac).
-    Warns if JDK version is too new (>21) since Gradle may not support it.
+    """Check if Java JDK 11+ is installed (needs javac, not just java/keytool).
+    A JRE without javac will fail Gradle builds — detect and warn early.
     """
-    if shutil.which("javac") is None and shutil.which("keytool") is None:
+    if shutil.which("javac") is None:
+        # User might have a JRE but not a JDK
+        if shutil.which("java") is not None or shutil.which("keytool") is not None:
+            log("Java JRE found but JDK is missing (no javac). Gradle requires a full JDK.", "WARN")
+            log("  Install a JDK (not JRE): https://adoptium.net/", "WARN")
+            if IS_WIN:
+                log("  winget install EclipseAdoptium.Temurin.17.JDK", "WARN")
+            else:
+                log("  Linux (apt): sudo apt install openjdk-17-jdk", "WARN")
         return False
     # Check version — Gradle 8.14 supports up to JDK 23; JDK 24+ may fail
     try:

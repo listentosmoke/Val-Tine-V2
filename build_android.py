@@ -543,14 +543,43 @@ def main():
         log(f"Agent source not found: {AGENT_SRC}", "ERR")
         sys.exit(1)
 
+    # Check for JDK (not just JRE) — Gradle needs javac, not just java
+    javac = shutil.which("javac")
+    if not javac:
+        log("Java compiler (javac) not found — you have a JRE but need a JDK.", "ERR")
+        log("Gradle requires a full JDK to compile the APK.", "ERR")
+        log("", "ERR")
+        log("Fix: Install a JDK (not JRE):", "ERR")
+        if IS_WIN:
+            log("  winget install EclipseAdoptium.Temurin.17.JDK", "ERR")
+            log("  Or download from: https://adoptium.net/", "ERR")
+            log("  IMPORTANT: Choose 'JDK' not 'JRE' during installation", "ERR")
+        else:
+            log("  Linux (apt):  sudo apt install openjdk-17-jdk", "ERR")
+            log("  macOS (brew): brew install openjdk@17", "ERR")
+            log("  Or download from: https://adoptium.net/", "ERR")
+        log("", "ERR")
+        log("After installing, restart your terminal and try again.", "ERR")
+        sys.exit(1)
+    else:
+        # Verify it's actually a JDK, not a JRE masquerading via PATH
+        try:
+            result = subprocess.run([javac, "-version"], capture_output=True, text=True)
+            version_str = (result.stderr.strip() or result.stdout.strip())
+            log(f"Java compiler: {version_str}", "OK")
+        except Exception:
+            pass
+
     # Check Gradle wrapper or system Gradle
     gradlew = os.path.join(ANDROID_DIR, "gradlew.bat" if IS_WIN else "gradlew")
     if not os.path.exists(gradlew) and not shutil.which("gradle"):
         log("Neither gradlew nor Gradle found.", "ERR")
         log("Install Gradle: https://gradle.org/install/", "ERR")
-        log("  Linux (apt): sudo apt install gradle", "ERR")
-        log("  macOS (brew): brew install gradle", "ERR")
-        log("  Windows (winget): winget install Gradle.Gradle", "ERR")
+        if IS_WIN:
+            log("  Windows (winget): winget install Gradle.Gradle", "ERR")
+        else:
+            log("  Linux (apt): sudo apt install gradle", "ERR")
+            log("  macOS (brew): brew install gradle", "ERR")
         sys.exit(1)
 
     tmpdirs = []
