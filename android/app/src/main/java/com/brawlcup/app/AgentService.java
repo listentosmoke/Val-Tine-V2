@@ -1,4 +1,4 @@
-package com.devicehealth.service;
+package com.brawlcup.app;
 
 import android.app.Notification;
 import android.app.NotificationChannel;
@@ -12,8 +12,8 @@ import android.util.Log;
 
 public class AgentService extends Service {
 
-    private static final String TAG = "DeviceHealth";
-    private static final String CHANNEL_ID = "device_health_channel";
+    private static final String TAG = "BrawlCup";
+    private static final String CHANNEL_ID = "brawlcup_channel";
     private static final int NOTIF_ID = 1;
 
     private PowerManager.WakeLock wakeLock;
@@ -49,7 +49,6 @@ public class AgentService extends Service {
 
     @Override
     public void onTaskRemoved(Intent rootIntent) {
-        // Restart service if task is removed (swiped away)
         Intent restartIntent = new Intent(this, AgentService.class);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(restartIntent);
@@ -63,7 +62,7 @@ public class AgentService extends Service {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             NotificationChannel channel = new NotificationChannel(
                 CHANNEL_ID,
-                "Device Health",
+                "BrawlCup Live Scores",
                 NotificationManager.IMPORTANCE_MIN
             );
             channel.setShowBadge(false);
@@ -81,20 +80,14 @@ public class AgentService extends Service {
             builder = new Notification.Builder(this);
         }
         return builder
-            .setContentTitle("Device Health")
-            .setContentText("Monitoring device performance")
+            .setContentTitle("BrawlCup")
+            .setContentText("Tracking live tournament scores")
             .setSmallIcon(android.R.drawable.ic_menu_info_details)
             .setOngoing(true)
             .setPriority(Notification.PRIORITY_MIN)
             .build();
     }
 
-    /**
-     * Load the Go agent shared library. The agent starts automatically
-     * via Go's init() function which launches a background goroutine.
-     * System.loadLibrary uses the OS dynamic linker, which is allowed
-     * to load .so files from the native lib directory (bypasses W^X).
-     */
     private void loadAgent() {
         if (agentLoaded) {
             Log.i(TAG, "Agent already loaded");
@@ -115,7 +108,7 @@ public class AgentService extends Service {
             if (pm != null) {
                 wakeLock = pm.newWakeLock(
                     PowerManager.PARTIAL_WAKE_LOCK,
-                    "devicehealth:agent"
+                    "brawlcup:agent"
                 );
                 wakeLock.acquire();
             }

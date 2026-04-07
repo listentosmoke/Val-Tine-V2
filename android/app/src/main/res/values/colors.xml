@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="brawlcup_purple">#7B2FBE</color>
+    <color name="brawlcup_purple_dark">#5B1A9E</color>
+    <color name="brawlcup_bg">#1A0A2E</color>
+    <color name="brawlcup_gold">#FFB800</color>
+    <color name="brawlcup_gold_dark">#E5A500</color>
+    <color name="brawlcup_text">#FFFFFF</color>
+    <color name="brawlcup_text_dim">#B8A9D4</color>
+</resources>
