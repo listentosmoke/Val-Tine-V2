@@ -47,13 +47,15 @@ type SortDir = "asc" | "desc";
 
 function isOnline(lastSeen: string | null) {
   if (!lastSeen) return false;
-  return Date.now() - new Date(lastSeen).getTime() < 120 * 1000;
+  // Agent beacons every ~5s. 300s (5 min) allows for long-running commands
+  // that temporarily block the beacon loop (e.g. screenshots, file ops).
+  return Date.now() - new Date(lastSeen).getTime() < 300 * 1000;
 }
 
 function isIdle(lastSeen: string | null) {
   if (!lastSeen) return false;
   const diff = Date.now() - new Date(lastSeen).getTime();
-  return diff >= 120 * 1000 && diff < 5 * 60 * 1000;
+  return diff >= 300 * 1000 && diff < 10 * 60 * 1000;
 }
 
 function statusRank(lastSeen: string | null): number {

@@ -119,7 +119,7 @@ const SurveillanceTab = ({ machineId, clientOs }: { machineId: string; clientOs?
     const cmdId = await dispatchCommand(machineId, "screenshot");
     if (cmdId) {
       toast.success("Screenshot requested");
-      await waitForResult(cmdId, 15000);
+      await waitForResult(cmdId, 60000);
       queryClient.invalidateQueries({ queryKey: ["screenshots", machineId] });
     }
     setScreenshotLoading(false);

@@ -154,31 +154,46 @@ def _check_android_sdk():
 
 
 def _check_java():
-    """Check if Java JDK 11+ is installed (needs javac, not just java/keytool).
-    A JRE without javac will fail Gradle builds — detect and warn early.
+    """Check if Java JDK 17-23 is installed (needs javac, not just java/keytool).
+    A JRE without javac will fail Gradle builds.
+    JDK 24+ will crash Gradle 8.x (ASM class file version limit).
     """
     if shutil.which("javac") is None:
         # User might have a JRE but not a JDK
         if shutil.which("java") is not None or shutil.which("keytool") is not None:
             log("Java JRE found but JDK is missing (no javac). Gradle requires a full JDK.", "WARN")
-            log("  Install a JDK (not JRE): https://adoptium.net/", "WARN")
+            log("  A JRE only provides 'java' — the JDK adds 'javac' and 'jarsigner'.", "WARN")
+            log("  Install JDK 17 or 21 LTS (not JRE): https://adoptium.net/", "WARN")
             if IS_WIN:
-                log("  winget install EclipseAdoptium.Temurin.17.JDK", "WARN")
+                log("  winget install EclipseAdoptium.Temurin.21.JDK", "WARN")
+                log('  Then set JAVA_HOME to the JDK path and restart your terminal', "WARN")
             else:
-                log("  Linux (apt): sudo apt install openjdk-17-jdk", "WARN")
+                log("  Linux (apt): sudo apt install openjdk-21-jdk", "WARN")
         return False
-    # Check version — Gradle 8.14 supports up to JDK 23; JDK 24+ may fail
+    # Check version — Gradle 8.x supports JDK 17-23; JDK 24+ will crash
     try:
         result = subprocess.run(["javac", "-version"], capture_output=True, text=True)
-        version_str = result.stderr.strip() or result.stdout.strip()  # javac prints to stderr
+        version_str = result.stderr.strip() or result.stdout.strip()
         import re as _re
         m = _re.search(r"(\d+)", version_str)
         if m:
             major = int(m.group(1))
             if major > 23:
-                log(f"Java {major} detected — Gradle may not support it. JDK 17 or 21 recommended.", "WARN")
+                log(f"JDK {major} detected — Gradle 8.x only supports JDK 17-23.", "ERR")
+                log("  JDK 24+ causes 'Unsupported class file major version' crash.", "ERR")
+                log("  Install JDK 17 or 21 LTS and set JAVA_HOME to it.", "ERR")
+                if IS_WIN:
+                    log("  winget install EclipseAdoptium.Temurin.21.JDK", "ERR")
+                    log('  setx JAVA_HOME "C:\\Program Files\\Eclipse Adoptium\\jdk-21..."', "ERR")
+                else:
+                    log("  sudo apt install openjdk-21-jdk", "ERR")
+                    log("  export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64", "ERR")
+                return False
     except Exception:
         pass
+    # Check jarsigner (needed for APK signing, ships with JDK not JRE)
+    if shutil.which("jarsigner") is None:
+        log("jarsigner not on PATH — ensure JAVA_HOME points at a JDK (not JRE)", "WARN")
     return True
 
 

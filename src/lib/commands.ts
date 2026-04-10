@@ -33,7 +33,7 @@ const TERMINAL = new Set(["complete", "error", "failed"]);
  */
 export function waitForResult(
   commandId: string,
-  timeoutMs = 30000
+  timeoutMs = 60000
 ): Promise<{ status: string; result: string | null } | null> {
   return new Promise((resolve) => {
     let resolved = false;
@@ -64,7 +64,7 @@ export function waitForResult(
       }
     };
 
-    const pollInterval = setInterval(checkResult, 250);
+    const pollInterval = setInterval(checkResult, 500);
     checkResult();
   });
 }

@@ -36,13 +36,13 @@ const navItems = [
 
 function isOnline(lastSeen: string | null) {
   if (!lastSeen) return false;
-  return Date.now() - new Date(lastSeen).getTime() < 120 * 1000;
+  return Date.now() - new Date(lastSeen).getTime() < 300 * 1000;
 }
 
 function isIdle(lastSeen: string | null) {
   if (!lastSeen) return false;
   const diff = Date.now() - new Date(lastSeen).getTime();
-  return diff >= 120 * 1000 && diff < 5 * 60 * 1000;
+  return diff >= 300 * 1000 && diff < 10 * 60 * 1000;
 }
 
 const AppLayout = ({ children }: AppLayoutProps) => {
