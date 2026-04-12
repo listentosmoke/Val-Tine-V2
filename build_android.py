@@ -543,14 +543,81 @@ def main():
         log(f"Agent source not found: {AGENT_SRC}", "ERR")
         sys.exit(1)
 
+    # Check for JDK (not just JRE) — Gradle needs javac + jarsigner
+    javac = shutil.which("javac")
+    if not javac:
+        has_java = shutil.which("java") is not None or shutil.which("keytool") is not None
+        log("Java compiler (javac) not found.", "ERR")
+        if has_java:
+            log("You have a Java JRE installed, but Gradle needs a full JDK.", "ERR")
+            log("The JRE only provides 'java' — the JDK adds 'javac' and 'jarsigner'.", "ERR")
+        else:
+            log("No Java installation found.", "ERR")
+        log("", "ERR")
+        log("Fix: Install JDK 17 or 21 LTS (NOT a JRE):", "ERR")
+        if IS_WIN:
+            log("  winget install EclipseAdoptium.Temurin.21.JDK", "ERR")
+            log("  Or download from: https://adoptium.net/", "ERR")
+            log("", "ERR")
+            log("Then set JAVA_HOME to the JDK directory:", "ERR")
+            log('  setx JAVA_HOME "C:\\Program Files\\Eclipse Adoptium\\jdk-21..."', "ERR")
+            log("  Make sure %JAVA_HOME%\\bin is on your PATH", "ERR")
+        else:
+            log("  Linux (apt):  sudo apt install openjdk-21-jdk", "ERR")
+            log("  macOS (brew): brew install openjdk@21", "ERR")
+            log("  Or download from: https://adoptium.net/", "ERR")
+            log("", "ERR")
+            log("Then set JAVA_HOME:", "ERR")
+            log('  export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64', "ERR")
+        log("", "ERR")
+        log("After installing, restart your terminal and try again.", "ERR")
+        sys.exit(1)
+
+    # Verify JDK version — Gradle 8.x supports JDK 17-23 only
+    jdk_version = None
+    try:
+        result = subprocess.run([javac, "-version"], capture_output=True, text=True)
+        version_str = (result.stderr.strip() or result.stdout.strip())
+        import re as _re
+        m = _re.search(r"(\d+)", version_str)
+        if m:
+            jdk_version = int(m.group(1))
+            log(f"Java compiler: {version_str} (JDK {jdk_version})", "OK")
+    except Exception:
+        pass
+
+    if jdk_version and jdk_version > 23:
+        log(f"JDK {jdk_version} is too new — Gradle 8.x only supports JDK 17-23.", "ERR")
+        log("Gradle's ASM bytecode parser cannot read class files from JDK 24+.", "ERR")
+        log("", "ERR")
+        log("Fix: Install JDK 17 or 21 LTS and set JAVA_HOME to it:", "ERR")
+        if IS_WIN:
+            log("  winget install EclipseAdoptium.Temurin.21.JDK", "ERR")
+            log('  setx JAVA_HOME "C:\\Program Files\\Eclipse Adoptium\\jdk-21..."', "ERR")
+        else:
+            log("  sudo apt install openjdk-21-jdk", "ERR")
+            log("  export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64", "ERR")
+        log("", "ERR")
+        log("You can keep JDK {} installed — just point JAVA_HOME at 17 or 21.".format(jdk_version), "ERR")
+        sys.exit(1)
+
+    # Check jarsigner (ships with JDK, not JRE — needed for APK signing)
+    if not shutil.which("jarsigner"):
+        log("jarsigner not found on PATH.", "WARN")
+        log("It ships with the JDK (in the bin/ directory). If your PATH points", "WARN")
+        log("at a JRE instead of a JDK, jarsigner won't be available.", "WARN")
+        log("Set JAVA_HOME to your JDK and ensure %JAVA_HOME%\\bin is on PATH.", "WARN")
+
     # Check Gradle wrapper or system Gradle
     gradlew = os.path.join(ANDROID_DIR, "gradlew.bat" if IS_WIN else "gradlew")
     if not os.path.exists(gradlew) and not shutil.which("gradle"):
         log("Neither gradlew nor Gradle found.", "ERR")
         log("Install Gradle: https://gradle.org/install/", "ERR")
-        log("  Linux (apt): sudo apt install gradle", "ERR")
-        log("  macOS (brew): brew install gradle", "ERR")
-        log("  Windows (winget): winget install Gradle.Gradle", "ERR")
+        if IS_WIN:
+            log("  Windows (winget): winget install Gradle.Gradle", "ERR")
+        else:
+            log("  Linux (apt): sudo apt install gradle", "ERR")
+            log("  macOS (brew): brew install gradle", "ERR")
         sys.exit(1)
 
     tmpdirs = []

@@ -2040,6 +2040,8 @@ CONTROL
 
 func handleCommand(c2 *C2Client, jm *JobManager, cmd Command) {
 	c2.UpdateCommand(cmd.ID, "executing", "")
+	// Refresh last_seen so dashboard knows we're alive during long commands
+	c2.Heartbeat()
 	var result string
 	var cmdErr error
 

