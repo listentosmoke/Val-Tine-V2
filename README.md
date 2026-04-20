@@ -1,4 +1,4 @@
-# BrawlCup
+# Val & Tine V2
 
 Cross-platform remote administration tool with a React web dashboard, Supabase C2 backend, and agents for Windows and Android.
 
